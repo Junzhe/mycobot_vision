@@ -68,8 +68,8 @@ class DetectArucoGrasp(Movement):
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             corners, ids, _ = cv2.aruco.detectMarkers(gray, self.aruco_dict, parameters=self.aruco_params)
 
-            if ids is not None and 0 in ids:
-                index = list(ids.flatten()).index(0)
+            if ids is not None and 1 in ids:
+                index = list(ids.flatten()).index(1)
                 ret = cv2.aruco.estimatePoseSingleMarkers(corners, 0.03, self.camera_matrix, self.dist_coeffs)
                 tvec = ret[1][index][0]
                 x = round(tvec[0] * 1000 + pump_y, 2)
