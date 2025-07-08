@@ -7,7 +7,6 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import cv2
 import numpy as np
 import time
-import os
 import rospy
 from visualization_msgs.msg import Marker
 from moving_utils import Movement
@@ -68,16 +67,27 @@ class DetectArucoGrasp(Movement):
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             corners, ids, _ = cv2.aruco.detectMarkers(gray, self.aruco_dict, parameters=self.aruco_params)
 
-            if ids is not None and 1 in ids:
-                index = list(ids.flatten()).index(1)
-                ret = cv2.aruco.estimatePoseSingleMarkers(corners, 0.03, self.camera_matrix, self.dist_coeffs)
-                tvec = ret[1][index][0]
-                x = round(tvec[0] * 1000 + pump_y, 2)
-                y = round(tvec[1] * 1000 + pump_x, 2)
-                print(f"🎯 识别到 ArUco ID 0 @ X={x}, Y={y}")
+            if ids is not None:
+                print(f"✅ 检测到 ArUco ids: {ids.flatten()}")
 
-                self.move_to_target(x, y)
-                break  # 单次识别抓取后退出
+                if 1 in ids:
+                    index = list(ids.flatten()).index(1)
+                    print(f"➡️ 选择目标 ID = 1, index = {index}")
+
+                    ret = cv2.aruco.estimatePoseSingleMarkers(corners, 0.03, self.camera_matrix, self.dist_coeffs)
+                    tvec = ret[1][index][0]
+
+                    x = round(tvec[0] * 1000 + pump_y, 2)
+                    y = round(tvec[1] * 1000 + pump_x, 2)
+
+                    print(f"🎯 ArUco ID 1 位姿坐标 X = {x}, Y = {y}")
+
+                    self.move_to_target(x, y)
+                    break  # 单次识别后退出
+                else:
+                    print("⚠️ 识别到了 ArUco，但不包含 ID=1")
+            else:
+                print("⚠️ 没有检测到任何 ArUco 标签")
 
             cv2.imshow("Aruco Detection", img)
 
