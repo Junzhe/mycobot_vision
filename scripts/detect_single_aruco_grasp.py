@@ -12,7 +12,7 @@ from visualization_msgs.msg import Marker
 from moving_utils import Movement
 from pymycobot import MyCobot280
 
-# 摄像头与吸泵偏移量
+# 摄像头与夹爪末端的偏移量（单位 mm）
 pump_y = -55
 pump_x = 15
 
@@ -20,27 +20,34 @@ class DetectArucoGrasp(Movement):
     def __init__(self):
         self.cache_x = self.cache_y = 0
 
-        # 自动检测串口
-        self.robot_port = os.popen("ls /dev/ttyAMA*" if os.path.exists("/dev/ttyAMA0") else "ls /dev/ttyUSB*" ).readline().strip()
+        # ✅ 自动检测串口
+        self.robot_port = os.popen("ls /dev/ttyAMA*" if os.path.exists("/dev/ttyAMA0") else "ls /dev/ttyUSB*").readline().strip()
+        print(f"📡 使用串口连接: {self.robot_port}")
         self.mc = MyCobot280(self.robot_port, 1000000)
 
-        # 相机初始化
+        # ✅ 初始化夹爪
+        self.mc.set_gripper_mode(0)        # 设置为运动模式
+        time.sleep(0.5)
+        self.mc.set_gripper_state(0, 80)   # 打开夹爪
+        time.sleep(1.5)
+
+        # ✅ 初始化相机
         self.cap = cv2.VideoCapture(0)
         self.cap.set(3, 640)
         self.cap.set(4, 480)
 
-        # ArUco 字典和参数
+        # ✅ ArUco 字典和参数
         self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_250)
         self.aruco_params = cv2.aruco.DetectorParameters_create()
 
-        # 相机内参矩阵
+        # ✅ 相机内参矩阵（需根据实际标定值修改）
         self.camera_matrix = np.array([
             [781.33, 0., 347.53],
             [0., 783.79, 246.67],
             [0., 0., 1.]
         ])
 
-        # 相机畸变参数
+        # ✅ 相机畸变系数
         self.dist_coeffs = np.array(([[0.34, -2.52, -0.0012, 0.0067, 2.57]]))
 
         rospy.init_node("aruco_single_grasp", anonymous=True)
@@ -48,13 +55,25 @@ class DetectArucoGrasp(Movement):
     def move_to_target(self, x, y):
         print(f"➡️ 执行抓取动作 @ ({x:.1f}, {y:.1f})")
         approach = [x, y, 200, 178.99, -3.78, -62.9]
-        grasp = [x, y, 65.5, 178.99, -3.78, -62.9]
+        grasp    = [x, y, 65.5, 178.99, -3.78, -62.9]
 
+        # 移动到上方
         self.mc.send_coords(approach, 25, 0)
-        time.sleep(2.5)
+        time.sleep(2)
+
+        # 降下去夹取
         self.mc.send_coords(grasp, 25, 0)
-        time.sleep(2.5)
-        print("✅ 抓取完成！")
+        time.sleep(2)
+
+        # ✋ 闭合夹爪夹取
+        self.mc.set_gripper_state(1, 80)
+        time.sleep(1.5)
+
+        # 抬起
+        self.mc.send_coords(approach, 25, 0)
+        time.sleep(2)
+
+        print("✅ 抓取并抬升完成！")
 
     def run(self):
         print("🚀 开始检测 ArUco 目标...")
@@ -70,7 +89,7 @@ class DetectArucoGrasp(Movement):
             if ids is not None:
                 print(f"✅ 检测到 ArUco ids: {ids.flatten()}")
 
-                if 1 in ids:
+                if 1 in ids.flatten():
                     index = list(ids.flatten()).index(1)
                     print(f"➡️ 选择目标 ID = 1, index = {index}")
 
@@ -81,9 +100,8 @@ class DetectArucoGrasp(Movement):
                     y = round(tvec[1] * 1000 + pump_x, 2)
 
                     print(f"🎯 ArUco ID 1 位姿坐标 X = {x}, Y = {y}")
-
                     self.move_to_target(x, y)
-                    break  # 单次识别后退出
+                    break  # 单次执行抓取
                 else:
                     print("⚠️ 识别到了 ArUco，但不包含 ID=1")
             else:
