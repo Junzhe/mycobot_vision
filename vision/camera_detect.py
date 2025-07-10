@@ -1,5 +1,5 @@
 import cv2
-from uvc_camera import UVCCamera
+from vision.uvc_camera import uvcCamera
 import stag
 import numpy as np
 import json
