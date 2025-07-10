@@ -5,6 +5,12 @@ import time
 import json
 import numpy as np
 from pymycobot.mycobot import MyCobot
+
+# 👇 添加此段以修复 vision 模块找不到问题
+import sys
+import os
+sys.path.append(os.path.dirname(__file__))
+
 from vision.camera_detect import camera_detect
 
 # ------------------ Step 1: Run hand-eye calibration ------------------
