@@ -4,9 +4,9 @@ import stag
 import numpy as np
 import json
 import time
-from marker_utils import *
+from vision import marker_utils
 from scipy.linalg import svd
-from pymycobot import *
+from pymycobot.mycobot import MyCobot
 mc = MyCobot280("/dev/ttyAMA0", 115200)  # 需要手动设置端口及型号
 # mc = MyCobot320("COM32")  # 需要手动设置端口及型号
 type = mc.get_system_version()
