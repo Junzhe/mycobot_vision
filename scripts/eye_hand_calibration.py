@@ -9,7 +9,7 @@ from pymycobot.mycobot import MyCobot
 # 👇 添加此段以修复 vision 模块找不到问题
 import sys
 import os
-sys.path.append(os.path.dirname(__file__))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from vision.camera_detect import camera_detect
 
