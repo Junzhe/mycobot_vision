@@ -1,21 +1,14 @@
 import cv2
-from vision.uvc_camera import UVCCamera
+from uvc_camera import UVCCamera
 import stag
 import numpy as np
 import json
 import time
-from vision import marker_utils
+from marker_utils import *
 from scipy.linalg import svd
-from pymycobot.mycobot import MyCobot
+from pymycobot import *
+
 mc = MyCobot("/dev/ttyAMA0", 115200)  # 需要手动设置端口及型号
-# mc = MyCobot320("COM32")  # 需要手动设置端口及型号
-type = mc.get_system_version()
-offset_j5 = 0
-if type > 2:
-    offset_j5 = -90
-    print("280")
-else:
-    print("320")
 
             
 np.set_printoptions(suppress=True, formatter={'float_kind': '{:.2f}'.format})
