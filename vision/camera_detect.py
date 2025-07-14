@@ -9,6 +9,13 @@ from scipy.linalg import svd
 from pymycobot import *
 
 mc = MyCobot("/dev/ttyAMA0", 115200)  # 需要手动设置端口及型号
+type = mc.get_system_version()
+offset_j5 = 0
+if type > 2:
+    offset_j5 = -90
+    print("280")
+else:
+    print("320")
 
             
 np.set_printoptions(suppress=True, formatter={'float_kind': '{:.2f}'.format})
