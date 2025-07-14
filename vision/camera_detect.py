@@ -386,10 +386,17 @@ class camera_detect:
  
 
 if __name__ == "__main__":
-    camera_params = np.load("camera_params.npz")  # 相机配置文件
+
+    if mc.is_power_on()==0:
+        mc.power_on()
+    camera_params = np.load("camera_params.npz")  # 确保此文件存在
     mtx, dist = camera_params["mtx"], camera_params["dist"]
-    m = camera_detect(1, 32, mtx, dist)
-    mc.set_vision_mode(0)
+    m = camera_detect(camera_id=0, marker_size=32, mtx=mtx, dist=dist)
+
+    tool_len = 20  # 若你实际夹爪到相机距离不是20mm，请改成真实值
+    mc.set_tool_reference([0, 0, tool_len, 0, 0, 0])
+    mc.set_end_type(1)
+
 
     # m.camera_open_loop()
     # m.stag_identify_loop()
