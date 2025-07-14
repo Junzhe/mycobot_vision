@@ -356,8 +356,8 @@ class camera_detect:
 
 
     def vision_trace_loop(self, ml):
-        mc.set_fresh_mode(1)
-        mc.set_vision_mode(1)   #set limit
+        # mc.set_fresh_mode(1)
+        # mc.set_vision_mode(1)   #set limit
         time.sleep(1)
 
         ml.send_angles(self.origin_mycbot_horizontal, 50)  # 移动到观测点
