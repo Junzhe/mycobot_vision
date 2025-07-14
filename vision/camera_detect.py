@@ -393,7 +393,7 @@ if __name__ == "__main__":
     mtx, dist = camera_params["mtx"], camera_params["dist"]
     m = camera_detect(camera_id=0, marker_size=32, mtx=mtx, dist=dist)
 
-    tool_len = 20  # 若你实际夹爪到相机距离不是20mm，请改成真实值
+    tool_len = 90  # 若你实际夹爪到相机距离不是20mm，请改成真实值
     mc.set_tool_reference([0, 0, tool_len, 0, 0, 0])
     mc.set_end_type(1)
 
