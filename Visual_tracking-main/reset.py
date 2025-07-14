@@ -6,7 +6,7 @@ from pymycobot import MyCobot
 
 def main():
     print("[INFO] 正在连接机械臂...")
-    mc = MyCobot("/dev/ttyAMA0", 115200)  # 确保串口正确
+    mc = MyCobot280("/dev/ttyAMA0", 1000000)  # 确保串口正确
     
     print("[INFO] 上电中...")
     mc.power_on()
