@@ -2,7 +2,7 @@
 # encoding: utf-8
 
 import time
-from pymycobot import MyCobot
+from pymycobot import *
 
 def main():
     print("[INFO] 正在连接机械臂...")
