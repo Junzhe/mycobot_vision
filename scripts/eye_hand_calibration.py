@@ -1,10 +1,10 @@
-# encoding: UTF-8
+# encoding: UTF-8 
 #!/usr/bin/env python3
 
 import time
 import json
 import numpy as np
-from pymycobot.mycobot import MyCobot
+from pymycobot.mycobot import Movement  # ✅ 用 Movement 替代 MyCobot
 
 # 👇 添加此段以修复 vision 模块找不到问题
 import sys
@@ -16,14 +16,15 @@ from vision.camera_detect import camera_detect
 # ------------------ Step 1: Run hand-eye calibration ------------------
 
 def run_eye_hand_calibration():
-    mc = MyCobot("/dev/ttyAMA0", 115200)
+    # ✅ 初始化 Movement 实例（使用串口号和波特率）
+    mc = Movement("/dev/ttyAMA0", 115200)
 
     # Step 1: Set camera parameters and create detector
     camera_params = np.load("camera_params.npz")
     mtx, dist = camera_params['mtx'], camera_params['dist']
     m = camera_detect(camera_id=0, marker_size=47, mtx=mtx, dist=dist)
 
-    # 设置夹爪参考与末端类型（工具中心点）
+    # ✅ 设置夹爪参考与末端类型（工具中心点）
     mc.set_tool_reference([0, 20, 0, 0, 0, 0])
     mc.set_end_type(1)
 
