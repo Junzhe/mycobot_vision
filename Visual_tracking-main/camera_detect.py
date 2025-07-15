@@ -1,3 +1,9 @@
+# ✅ 文件功能：
+# 1. 支持识别多个 Stag 码（ID=0,1,...）并估计其相机系位姿
+# 2. 用户手动输入目标 ID，程序将机械臂移动到该目标对应的位置（未执行抓取）
+# 3. 移动前自动将机械臂复位至观察位姿
+# 4. 所有新增代码以 "# [MODIFIED]" 或 "# [ADDED]" 标注
+
 import cv2
 from uvc_camera import UVCCamera
 import stag
@@ -10,12 +16,8 @@ from pymycobot import *
 
 mc = MyCobot280("/dev/ttyAMA0", 1000000)
 type = mc.get_system_version()
-offset_j5 = 0
-if type > 2:
-    offset_j5 = -90
-    print("280")
-else:
-    print("320")
+offset_j5 = -90 if type > 2 else 0
+print("280" if type > 2 else "320")
 
 np.set_printoptions(suppress=True, formatter={'float_kind': '{:.2f}'.format})
 
@@ -28,8 +30,7 @@ class camera_detect:
         self.camera = UVCCamera(self.camera_id, self.mtx, self.dist)
         self.camera_open()
 
-        self.origin_mycbot_horizontal = [42.36, -35.85, -52.91, 88.59, 90+offset_j5, 0.0]
-        self.origin_mycbot_level = [-90, 5, -104, 14, 90 + offset_j5, 0]
+        self.observe_pose = [0, 0, 2, -58, -2, -14 + offset_j5]  # [ADDED] 摄像头面向桌面的观察位
         self.IDENTIFY_LEN = 300
         self.EyesInHand_matrix = None
         self.load_matrix()
@@ -81,10 +82,10 @@ class camera_detect:
         corners, ids, _ = stag.detectMarkers(frame, 11)
         return self.calc_markers_base_position(corners, ids)
 
-    # [ADDED] 根据目标 ID 选择目标并靠近
+    # [MODIFIED] 加入观察位逻辑，根据目标 ID 控制机械臂移动
     def move_to_target_id(self, ml, target_id):
-        print(f"[INFO] 识别多个目标，等待找到 ID={target_id} ...")
-        ml.send_angles(self.origin_mycbot_horizontal, 50)
+        print(f"[INFO] 识别多个目标，先移动到观察位...")
+        ml.send_angles(self.observe_pose, 30)  # [MODIFIED] 使用观察位
         self.wait()
 
         current_pose = ml.get_coords()
@@ -115,8 +116,6 @@ class camera_detect:
 
         print(f"[ERROR] 多次尝试后未能找到 ID={target_id}")
 
-    # 其余函数保持不变（略）...
-
 if __name__ == "__main__":
     camera_params = np.load("camera_params.npz")
     mtx, dist = camera_params["mtx"], camera_params["dist"]
@@ -128,6 +127,6 @@ if __name__ == "__main__":
             target_id = int(input("请输入目标 Stag ID（如0或1），输入-1退出: "))
             if target_id == -1:
                 break
-            m.move_to_target_id(mc, target_id)  # [ADDED]
+            m.move_to_target_id(mc, target_id)
         except Exception as e:
             print("[错误] 输入无效:", e)
