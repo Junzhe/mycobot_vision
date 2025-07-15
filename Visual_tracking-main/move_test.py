@@ -1,67 +1,73 @@
+
 import time
 import numpy as np
-from pymycobot.mycobot import MyCobot
+from pymycobot import MyCobot280
 from camera_detect import camera_detect
 
-def move_to_observe_position(mc):
-    print("[INFO] 移动至观察位...")
-    version = mc.get_system_version()
-    offset_j5 = -90 if version > 2 else 0
-    observe_pose = [0, 0, 2, -58, -2, -14 + offset_j5]
-    mc.send_angles(observe_pose, 30)
-    time.sleep(3)
+if __name__ == "__main__":
+    try:
+        # === 初始化 ===
+        print("[INFO] 初始化机械臂...")
+        mc = MyCobot280("/dev/ttyAMA0", 1000000)  # 修改串口为你的实际串口
+        offset_j5 = -90 if mc.get_system_version() > 2 else 0
 
-def is_far_enough(current, target, threshold=5.0):
-    """比较坐标位置差异是否超过阈值（单位 mm）"""
-    current = np.array(current[:3])
-    target = np.array(target[:3])
-    distance = np.linalg.norm(current - target)
-    return distance > threshold
+        # === 加载相机标定信息 ===
+        print("[INFO] 加载相机参数和标定矩阵...")
+        camera_params = np.load("camera_params.npz")
+        mtx, dist = camera_params["mtx"], camera_params["dist"]
+        cd = camera_detect(camera_id=0, marker_size=32, mtx=mtx, dist=dist)
 
-def main():
-    print("[INFO] 初始化机械臂...")
-    mc = MyCobot("/dev/ttyAMA0", 1000000)
-    mc.power_on()
-    time.sleep(1)
+        # === 移动到推荐观察位姿 ===
+        observe_pose = [42.36, -35.85, -52.91, 88.59, 90 + offset_j5, 0.0]
+        print("[INFO] 移动至观察位...")
+        mc.send_angles(observe_pose, 30)
+        time.sleep(3)
 
-    print("[INFO] 加载相机参数和标定矩阵...")
-    camera_params = np.load("camera_params.npz")
-    mtx, dist = camera_params["mtx"], camera_params["dist"]
-    detector = camera_detect(0, 32, mtx, dist)
+        while True:
+            user_input = input("\n请输入目标 Stag ID（如0或1），输入-1退出: ")
+            try:
+                target_id = int(user_input)
+            except ValueError:
+                print("[ERROR] 输入无效，请输入数字。")
+                continue
 
-    while True:
-        try:
-            target_id = int(input("\n请输入目标 Stag ID（如0或1），输入-1退出: "))
             if target_id == -1:
+                print("[INFO] 退出程序。")
                 break
 
-            print("[INFO] 先移动至观察位...")
-            move_to_observe_position(mc)
-
             print("[INFO] 开始识别...")
-            for _ in range(30):
-                marker_pack, ids = detector.stag_identify()
-                if ids is not None and len(ids) > 0:
-                    ids_list = ids.flatten().tolist()
-                    if target_id in ids_list:
-                        print(f"[INFO] 找到目标 ID={target_id}，计算并移动...")
-                        target_coords, found_ids = detector.stag_robot_identify(mc)
-                        if is_far_enough(mc.get_coords(), target_coords):
-                            # 保持原角度，只移动位置坐标
-                            current_coords = mc.get_coords()
-                            for i in range(3, 6):
-                                target_coords[i] = current_coords[i]
-                            detector.coord_limit(target_coords)
-                            mc.send_coords(target_coords, 30)
-                        else:
-                            print("[INFO] 当前已接近目标位置，跳过移动。")
-                        break
-                time.sleep(0.1)
-            else:
-                print("[WARN] 未检测到目标 ID。")
-        except Exception as e:
-            print(f"[EXCEPTION] 出现错误: {e}")
-            continue
+            try:
+                marker_pos, ids = cd.stag_identify()
 
-if __name__ == "__main__":
-    main()
+                if ids is None or len(ids) == 0:
+                    print("[WARN] 未检测到任何Stag码，请调整相机视角。")
+                    continue
+
+                ids = ids.flatten()
+                if target_id not in ids:
+                    print(f"[WARN] 未找到目标ID={target_id}，检测到的ID有: {ids}")
+                    continue
+
+                print(f"[INFO] 找到目标ID={target_id}，开始计算并移动...")
+
+                # 获取目标的机器人基坐标系下的位姿
+                coords, detected_ids = cd.stag_robot_identify(mc)
+                cd.coord_limit(coords)
+
+                # 仅保留末端旋转姿态，使用当前姿态
+                current = mc.get_coords()
+                if current is None:
+                    print("[ERROR] 无法获取当前机械臂坐标。")
+                    continue
+                for i in range(3, 6):
+                    coords[i] = current[i]
+
+                print("[INFO] 移动到目标位置:", coords)
+                mc.send_coords(coords, 30)
+                time.sleep(3)
+
+            except Exception as e:
+                print(f"[EXCEPTION] 出现错误: {e}")
+
+    except KeyboardInterrupt:
+        print("\n[INFO] 用户中断，程序退出。")
