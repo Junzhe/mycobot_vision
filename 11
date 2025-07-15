@@ -1,13 +1,22 @@
-
 (ros1 noetic py3)er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 move_test.py
+280
 [INFO] 初始化机械臂...
-Note: This class is no longer maintained since v3.6.0, please refer to the project documentation: https://github.com/elephantrobotics/pymycobot/blob/main/README.md
 [INFO] 加载相机参数和标定矩阵...
-[ WARN:0@5.958] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video1): can't open camera by index
-[ERROR:0@6.033] global obsensor_uvc_stream_channel.cpp:163 getStreamChannelGroup Camera index out of range
+[INFO] 移动至观察位...
 
-请输入目标 Stag ID（如0或1），输入-1退出: 1`
-[EXCEPTION] 出现错误: invalid literal for int() with base 10: '1`'
+请输入目标 Stag ID（如0或1），输入-1退出: 1
+[INFO] 开始识别...
+[INFO] 找到目标ID=1，开始计算并移动...
+[INFO] 移动到目标位置: [16.964856552803262, -177.4318925279452, 300, -177.1, -0.28, -179.39]
+
+请输入目标 Stag ID（如0或1），输入-1退出: 0
+[INFO] 开始识别...
+[INFO] 找到目标ID=0，开始计算并移动...
+[INFO] 移动到目标位置: [16.9240123925426, -177.55734856454208, 300, -177.1, -0.27, -179.48]
+
+请输入目标 Stag ID（如0或1），输入-1退出: 1
+[INFO] 开始识别...
+[INFO] 找到目标ID=1，开始计算并移动...
+[INFO] 移动到目标位置: [16.880515455803387, -177.60556536056183, 300, -177.1, -0.27, -179.48]
 
 请输入目标 Stag ID（如0或1），输入-1退出: 
-
