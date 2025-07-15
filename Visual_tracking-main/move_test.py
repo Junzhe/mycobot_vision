@@ -6,7 +6,7 @@ from camera_detect import camera_detect
 if __name__ == "__main__":
     try:
         print("[INFO] 初始化机械臂...")
-        mc = MyCobot280("/dev/ttyAMA0", 1000000)  # 修改为你的串口
+        mc = MyCobot280("/dev/ttyAMA0", 1000000)
         offset_j5 = -90 if mc.get_system_version() > 2 else 0
 
         print("[INFO] 加载相机参数和标定矩阵...")
@@ -14,11 +14,6 @@ if __name__ == "__main__":
         mtx, dist = camera_params["mtx"], camera_params["dist"]
         cd = camera_detect(camera_id=0, marker_size=32, mtx=mtx, dist=dist)
 
-        # === 设置控制模式（确保可移动）===
-        mc.set_fresh_mode(1)
-        mc.set_vision_mode(0)
-
-        # === 移动至标准观察位 ===
         observe_pose = [-90, 5, -104, 14, 90 + offset_j5, 0]
         print("[INFO] 移动至观察位...")
         mc.send_angles(observe_pose, 30)
@@ -27,7 +22,7 @@ if __name__ == "__main__":
         while True:
             user_input = input("\n请输入目标 Stag ID（如0或1），输入-1退出: ")
             try:
-                target_id = int(user_input.strip())
+                target_id = int(user_input)
             except ValueError:
                 print("[ERROR] 输入无效，请输入数字。")
                 continue
@@ -39,7 +34,6 @@ if __name__ == "__main__":
             print("[INFO] 开始识别...")
             try:
                 marker_pos, ids = cd.stag_identify()
-
                 if ids is None or len(ids) == 0:
                     print("[WARN] 未检测到任何Stag码，请调整相机视角。")
                     continue
@@ -51,35 +45,24 @@ if __name__ == "__main__":
 
                 print(f"[INFO] 找到目标ID={target_id}，开始计算并移动...")
 
-                coords, _ = cd.stag_robot_identify(mc)
+                coords, detected_ids = cd.stag_robot_identify(mc)
                 cd.coord_limit(coords)
 
-                current = mc.get_coords()
-                if current is None:
-                    print("[ERROR] 无法获取当前机械臂坐标。")
-                    continue
+                # 设置标准姿态（保持稳定）
+                coords[3:] = [-180, 0, 90]
 
-                # 保留当前角度
-                for i in range(3, 6):
-                    coords[i] = current[i]
-
-                print("[INFO] 计算得到目标位置:", coords)
-
-                # === 检查是否与当前位置过近 ===
-                diff = [abs(coords[i] - current[i]) for i in range(6)]
-                print("[DEBUG] 当前→目标差值:", diff)
-                if all(d < 1 for d in diff[:3]):
-                    print("[WARN] 当前坐标与目标坐标过近（<1mm），强制偏移Z轴+10mm以测试")
-                    coords[2] += 10
-
+                print(f"[INFO] 计算得到目标位置: {coords}")
                 print("[INFO] 正在尝试移动...")
                 mc.send_coords(coords, 30)
-                time.sleep(1)
 
-                if mc.is_moving() == 1:
-                    print("[SUCCESS] 机械臂已开始移动。")
+                time.sleep(1)
+                if mc.is_moving() == 0:
+                    current = mc.get_coords()
+                    print(f"[WARNING] 未检测到移动，可能控制指令未触发或目标位置未变化。")
+                    print(f"[DEBUG] 当前坐标: {current}")
+                    print(f"[DEBUG] 差值: {[coords[i] - current[i] for i in range(6)]}")
                 else:
-                    print("[WARNING] 未检测到移动，可能控制指令未触发或目标位置未变化。")
+                    print("[INFO] 正在移动中...")
 
             except Exception as e:
                 print(f"[EXCEPTION] 出现错误: {e}")
