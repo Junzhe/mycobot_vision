@@ -18,7 +18,7 @@ if __name__ == "__main__":
         cd = camera_detect(camera_id=0, marker_size=32, mtx=mtx, dist=dist)
 
         # === 移动到推荐观察位姿 ===
-        observe_pose = [42.36, -35.85, -52.91, 88.59, 90 + offset_j5, 0.0]
+        observe_pose = [-90, 5, -104, 14, 90 + offset_j5, 0]
         print("[INFO] 移动至观察位...")
         mc.send_angles(observe_pose, 30)
         time.sleep(3)
