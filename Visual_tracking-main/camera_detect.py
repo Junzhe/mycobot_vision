@@ -1,8 +1,4 @@
-# ✅ 文件功能：
-# 1. 支持识别多个 Stag 码（ID=0,1,...）并估计其相机系位姿
-# 2. 用户手动输入目标 ID，程序将机械臂移动到该目标对应的位置（未执行抓取）
-# 3. 移动前自动将机械臂复位至观察位姿
-# 4. 所有新增代码以 "# [MODIFIED]" 或 "# [ADDED]" 标注
+
 
 import cv2
 from uvc_camera import UVCCamera
@@ -17,7 +13,6 @@ from pymycobot import *
 mc = MyCobot280("/dev/ttyAMA0", 1000000)
 type = mc.get_system_version()
 offset_j5 = -90 if type > 2 else 0
-print("280" if type > 2 else "320")
 
 np.set_printoptions(suppress=True, formatter={'float_kind': '{:.2f}'.format})
 
@@ -30,7 +25,7 @@ class camera_detect:
         self.camera = UVCCamera(self.camera_id, self.mtx, self.dist)
         self.camera_open()
 
-        self.observe_pose = [0, 0, 2, -58, -2, -14 + offset_j5]  # [ADDED] 摄像头面向桌面的观察位
+        self.observe_pose = [0, 0, 2, -58, -2, -14 + offset_j5]
         self.IDENTIFY_LEN = 300
         self.EyesInHand_matrix = None
         self.load_matrix()
@@ -61,20 +56,59 @@ class camera_detect:
     def camera_open(self):
         self.camera.capture()
 
-    # [MODIFIED] 多目标支持：识别多个 Stag，返回 [(id, pose), ...]
+    def CvtRotationMatrixToEulerAngle(self, R):
+        euler = np.zeros(3)
+        euler[2] = np.arctan2(R[1, 0], R[0, 0])
+        cos_r = np.cos(euler[2])
+        sin_r = np.sin(euler[2])
+        euler[1] = np.arctan2(-R[2, 0], R[0, 0]*cos_r + R[1, 0]*sin_r)
+        euler[0] = np.arctan2(R[0, 2]*sin_r - R[1, 2]*cos_r, -R[0, 1]*sin_r + R[1, 1]*cos_r)
+        return euler
+
+    def Transformation_matrix(self, coord):
+        position_robot = coord[:3]
+        pose_robot = coord[3:]
+        RBT = self.CvtEulerAngleToRotationMatrix(pose_robot)
+        PBT = np.array([[position_robot[0]], [position_robot[1]], [position_robot[2]]])
+        temp = np.concatenate((RBT, PBT), axis=1)
+        array_1x4 = np.array([[0, 0, 0, 1]])
+        return np.concatenate((temp, array_1x4), axis=0)
+
+    def CvtEulerAngleToRotationMatrix(self, angles):
+        sin_angle = np.sin(angles)
+        cos_angle = np.cos(angles)
+        R = np.zeros((3, 3))
+        R[0, 0] = cos_angle[2] * cos_angle[1]
+        R[0, 1] = cos_angle[2] * sin_angle[1] * sin_angle[0] - sin_angle[2] * cos_angle[0]
+        R[0, 2] = cos_angle[2] * sin_angle[1] * cos_angle[0] + sin_angle[2] * sin_angle[0]
+        R[1, 0] = sin_angle[2] * cos_angle[1]
+        R[1, 1] = sin_angle[2] * sin_angle[1] * sin_angle[0] + cos_angle[2] * cos_angle[0]
+        R[1, 2] = sin_angle[2] * sin_angle[1] * cos_angle[0] - cos_angle[2] * sin_angle[0]
+        R[2, 0] = -sin_angle[1]
+        R[2, 1] = cos_angle[1] * sin_angle[0]
+        R[2, 2] = cos_angle[1] * cos_angle[0]
+        return R
+
+    def Eyes_in_hand(self, coord, camera, Matrix_TC):
+        Position_Camera = np.transpose(camera[:3])
+        Matrix_BT = self.Transformation_matrix(coord)
+        Position_Camera = np.append(Position_Camera, 1)
+        Position_B = Matrix_BT @ Matrix_TC @ Position_Camera
+        return Position_B
+
     def calc_markers_base_position(self, corners, ids):
         if len(corners) == 0 or ids is None:
-            return [], []
+            return []
         rvecs, tvecs = solve_marker_pnp(corners, self.marker_size, self.mtx, self.dist)
-        all_coords = []
+        results = []
         for i, tvec, rvec in zip(ids, tvecs, rvecs):
-            rvec = rvec.squeeze().tolist()
             tvec = tvec.squeeze().tolist()
+            rvec = rvec.squeeze().tolist()
             Rotation = cv2.Rodrigues(np.array([rvec]))[0]
             Euler = self.CvtRotationMatrixToEulerAngle(Rotation)
             coord = np.array([tvec[0], tvec[1], tvec[2], Euler[0], Euler[1], Euler[2]])
-            all_coords.append((int(i[0]), coord))
-        return all_coords, ids
+            results.append((int(i[0]), coord))
+        return results
 
     def stag_identify(self):
         self.camera.update_frame()
@@ -82,10 +116,9 @@ class camera_detect:
         corners, ids, _ = stag.detectMarkers(frame, 11)
         return self.calc_markers_base_position(corners, ids)
 
-    # [MODIFIED] 加入观察位逻辑，根据目标 ID 控制机械臂移动
     def move_to_target_id(self, ml, target_id):
-        print(f"[INFO] 识别多个目标，先移动到观察位...")
-        ml.send_angles(self.observe_pose, 30)  # [MODIFIED] 使用观察位
+        print("[INFO] 先移动至观察位...")
+        ml.send_angles(self.observe_pose, 30)
         self.wait()
 
         current_pose = ml.get_coords()
@@ -95,7 +128,7 @@ class camera_detect:
         current_pose_rad[-3:] *= np.pi / 180
 
         for attempt in range(10):
-            all_targets, ids = self.stag_identify()
+            all_targets = self.stag_identify()
             if not all_targets:
                 print("[WARN] 未识别到任何目标，重试中...")
                 time.sleep(0.5)
@@ -103,17 +136,15 @@ class camera_detect:
             for id_val, cam_coord in all_targets:
                 print(f"[DEBUG] 检测到 ID={id_val}")
                 if id_val == target_id:
-                    print(f"[INFO] 找到目标 ID={target_id}，计算位姿中...")
+                    print(f"[INFO] 找到目标 ID={target_id}，计算并移动...")
                     base_coord = self.Eyes_in_hand(current_pose_rad, cam_coord, self.EyesInHand_matrix)
                     base_coord = base_coord[:3].tolist() + current_pose[3:6]
                     self.coord_limit(base_coord)
-                    print(f"[INFO] 目标基坐标系位姿: {base_coord}")
                     ml.send_coords(base_coord, 30)
                     self.wait()
                     return
             print("[INFO] 当前帧中未找到目标 ID，继续尝试...")
             time.sleep(0.5)
-
         print(f"[ERROR] 多次尝试后未能找到 ID={target_id}")
 
 if __name__ == "__main__":
