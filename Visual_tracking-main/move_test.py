@@ -27,7 +27,7 @@ def main():
     print("[INFO] 加载相机参数和标定矩阵...")
     camera_params = np.load("camera_params.npz")
     mtx, dist = camera_params["mtx"], camera_params["dist"]
-    detector = camera_detect(1, 32, mtx, dist)
+    detector = camera_detect(0, 32, mtx, dist)
 
     while True:
         try:
