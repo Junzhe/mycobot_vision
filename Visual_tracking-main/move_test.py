@@ -1,22 +1,24 @@
-import time
+import time 
 import numpy as np
 from pymycobot import MyCobot280
 from camera_detect import camera_detect
 
 if __name__ == "__main__":
     try:
-        # === 初始化机械臂 ===
         print("[INFO] 初始化机械臂...")
-        mc = MyCobot280("/dev/ttyAMA0", 1000000)  # 修改为实际串口
+        mc = MyCobot280("/dev/ttyAMA0", 1000000)  # 修改为你的串口
         offset_j5 = -90 if mc.get_system_version() > 2 else 0
 
-        # === 加载相机参数和手眼标定矩阵 ===
         print("[INFO] 加载相机参数和标定矩阵...")
         camera_params = np.load("camera_params.npz")
         mtx, dist = camera_params["mtx"], camera_params["dist"]
         cd = camera_detect(camera_id=0, marker_size=32, mtx=mtx, dist=dist)
 
-        # === 移动至观察位姿 ===
+        # === 设置控制模式（确保可移动）===
+        mc.set_fresh_mode(1)
+        mc.set_vision_mode(0)
+
+        # === 移动至标准观察位 ===
         observe_pose = [-90, 5, -104, 14, 90 + offset_j5, 0]
         print("[INFO] 移动至观察位...")
         mc.send_angles(observe_pose, 30)
@@ -25,7 +27,7 @@ if __name__ == "__main__":
         while True:
             user_input = input("\n请输入目标 Stag ID（如0或1），输入-1退出: ")
             try:
-                target_id = int(user_input)
+                target_id = int(user_input.strip())
             except ValueError:
                 print("[ERROR] 输入无效，请输入数字。")
                 continue
@@ -49,25 +51,31 @@ if __name__ == "__main__":
 
                 print(f"[INFO] 找到目标ID={target_id}，开始计算并移动...")
 
-                # 获取目标在基坐标系下的坐标
-                coords, detected_ids = cd.stag_robot_identify(mc)
+                coords, _ = cd.stag_robot_identify(mc)
                 cd.coord_limit(coords)
 
-                # 使用当前末端角度
                 current = mc.get_coords()
                 if current is None:
                     print("[ERROR] 无法获取当前机械臂坐标。")
                     continue
+
+                # 保留当前角度
                 for i in range(3, 6):
                     coords[i] = current[i]
 
                 print("[INFO] 计算得到目标位置:", coords)
-                print("[INFO] 正在尝试移动...")
 
+                # === 检查是否与当前位置过近 ===
+                diff = [abs(coords[i] - current[i]) for i in range(6)]
+                print("[DEBUG] 当前→目标差值:", diff)
+                if all(d < 1 for d in diff[:3]):
+                    print("[WARN] 当前坐标与目标坐标过近（<1mm），强制偏移Z轴+10mm以测试")
+                    coords[2] += 10
+
+                print("[INFO] 正在尝试移动...")
                 mc.send_coords(coords, 30)
                 time.sleep(1)
 
-                # 检查是否触发运动
                 if mc.is_moving() == 1:
                     print("[SUCCESS] 机械臂已开始移动。")
                 else:
