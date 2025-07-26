@@ -395,7 +395,7 @@ class camera_detect:
 if __name__ == "__main__":
     camera_params = np.load("camera_params.npz")  # 相机配置文件
     mtx, dist = camera_params["mtx"], camera_params["dist"]
-    m = camera_detect(0, 32, mtx, dist)
+    m = camera_detect(0, 50, mtx, dist)
     mc.set_vision_mode(0)
 
     # m.camera_open_loop()
