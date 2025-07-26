@@ -1,66 +1,72 @@
 import time
-import numpy as np
 from pymycobot import MyCobot
-from camera_detect import camera_detect  # 使用你已有的 camera_detect.py 模块
+from camera_detect import camera_detect
+import numpy as np
 
-# 初始化机械臂与相机参数
-mc = MyCobot("/dev/ttyAMA0", 1000000)
+# ============ 目标编号与 STAG ID 映射 ============
+TARGET_ID_MAP = {
+    "A": 0,
+    "B": 1,
+    "C": 2
+}
 
-# 加载标定好的相机内参和畸变参数
-camera_params = np.load("camera_params.npz")
-mtx, dist = camera_params["mtx"], camera_params["dist"]
+# ============ 抓取主流程 ============
+def grasp_from_target_code(target_code):
+    if target_code not in TARGET_ID_MAP:
+        print(f"[ERROR] 未知编号：{target_code}")
+        return False
 
-# 初始化相机识别对象，marker_size 单位 mm
-cd = camera_detect(0, 50, mtx, dist)
+    target_id = TARGET_ID_MAP[target_code]
+    print(f"[INFO] 编号 {target_code} → STAG ID = {target_id}")
+    return run_grasp_pipeline(target_id)
 
-# 抓取任务主程序
-def main():
-    mc.set_fresh_mode(1)
-    mc.set_vision_mode(1)
-    time.sleep(1)
 
-    # 机械臂移动至观测初始位姿
-    origin_angles = [42.36, -35.85, -52.91, 88.59, 90, 0.0]
-    mc.send_angles(origin_angles, 50)
-    wait(mc)
-    time.sleep(1)
+# ============ 执行抓取任务 ============
+def run_grasp_pipeline(stag_id):
+    try:
+        # === 初始化机械臂与相机 ===
+        mc = MyCobot("/dev/ttyAMA0", 1000000)
+        camera_params = np.load("camera_params.npz")
+        mtx, dist = camera_params["mtx"], camera_params["dist"]
+        cam = camera_detect(0, 50, mtx, dist)
 
-    origin_pose = mc.get_coords()
-    while origin_pose is None:
-        origin_pose = mc.get_coords()
+        mc.set_fresh_mode(1)
+        mc.set_vision_mode(1)
+        time.sleep(1)
 
-    print("[INFO] 等待识别 STAG ID = 0 ...")
-    while True:
-        _, ids = cd.stag_identify()
-        if ids is not None and ids[0] == 0:
-            print("[INFO] 识别到 STAG ID = 0，开始计算目标位姿")
-            target_coords, _ = cd.stag_robot_identify(mc)
-            if target_coords is None:
-                continue
+        # === 移动到观察位 ===
+        mc.send_angles(cam.origin_mycbot_horizontal, 40)
+        cam.wait()
+        time.sleep(1)
 
-            # 限制抓取坐标范围
-            cd.coord_limit(target_coords)
+        # === 识别目标 STAG ID ===
+        max_try = 30
+        found = False
+        for _ in range(max_try):
+            pos_list, id_list = cam.stag_identify()
+            if stag_id in id_list:
+                print(f"[INFO] 找到目标 STAG ID = {stag_id}")
+                found = True
+                break
+            else:
+                print("[INFO] 未找到目标，继续识别...")
 
-            # 将姿态角度替换为当前末端姿态，避免识别抖动
-            target_coords[3:] = origin_pose[3:]
-            print(f"[INFO] 目标坐标: {target_coords}")
+        if not found:
+            print(f"[ERROR] 超过最大尝试次数，未找到 STAG ID = {stag_id}")
+            return False
 
-            # 移动到目标物前
-            mc.send_coords(target_coords, 30)
-            wait(mc)
+        # === 获取基坐标系下的目标位姿 ===
+        target_coords, _ = cam.stag_robot_identify(mc)
+        cam.coord_limit(target_coords)
+        print(f"[INFO] 抓取目标坐标: {target_coords}")
 
-            # 模拟夹取
-            print("[INFO] 模拟执行夹爪动作（请手动控制或替换为抓取控制）")
-            time.sleep(1)
-            break
+        # === 执行抓取动作 ===
+        mc.send_coords(target_coords, 30)
+        cam.wait()
 
-    print("[INFO] 抓取任务完成")
+        print("[SUCCESS] 抓取任务完成")
+        return True
 
-# 等待机械臂移动完成
-def wait(mc):
-    time.sleep(0.5)
-    while mc.is_moving() == 1:
-        time.sleep(0.2)
-
-if __name__ == '__main__':
-    main()
+    except Exception as e:
+        print(f"[ERROR] 抓取过程中异常: {e}")
+        return False
