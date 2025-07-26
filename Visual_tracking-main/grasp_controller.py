@@ -30,8 +30,7 @@ def run_grasp_pipeline(stag_id):
         mtx, dist = camera_params["mtx"], camera_params["dist"]
         cam = camera_detect(0, 50, mtx, dist)
 
-        mc.set_fresh_mode(1)
-        mc.set_vision_mode(1)
+
         time.sleep(1)
 
         # === 移动到观察位 ===
