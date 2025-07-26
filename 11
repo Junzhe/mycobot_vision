@@ -1,8 +1,21 @@
-er@er:~/catkin_ws/src/mycobot_vision/scripts$ python3 Flaskreceiver.py
- * Serving Flask app 'Flaskreceiver'
+er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 Flask.py
+280
+ * Serving Flask app 'Flask'
  * Debug mode: off
 WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
  * Running on all addresses (0.0.0.0)
  * Running on http://127.0.0.1:5000
  * Running on http://10.7.182.37:5000
 Press CTRL+C to quit
+📥 接收到目标编号：A                                      
+[INFO] 编号 A → STAG ID = 0
+[INFO] 相机识别中...
+[INFO] 基坐标系下的目标坐标: [50.04 -128.83 327.77 -58.00 -2.00 -104.00]
+[SUCCESS] 抓取完成
+172.20.10.7 - - [26/Jul/2025 21:49:31] "POST /target HTTP/1.1" 200 -
+📥 接收到目标编号：A
+[INFO] 编号 A → STAG ID = 0
+[INFO] 相机识别中...
+[INFO] 基坐标系下的目标坐标: [45.63 -138.32 328.78 -58.00 -2.00 -104.00]
+[SUCCESS] 抓取完成
+172.20.10.7 - - [26/Jul/2025 21:49:51] "POST /target HTTP/1.1" 200 -
