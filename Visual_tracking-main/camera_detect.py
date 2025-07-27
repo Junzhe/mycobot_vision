@@ -186,25 +186,34 @@ class camera_detect:
         return EyesInHand_matrix
     
     # 坐标转换为齐次变换矩阵，（x,y,z,rx,ry,rz）单位rad
-    def Transformation_matrix(self,coord):
+    def Transformation_matrix(self, coord):  
         position_robot = coord[:3]
-        pose_robot = coord[3:]
-        RBT = self.CvtEulerAngleToRotationMatrix(pose_robot)  # 将欧拉角转为旋转矩阵
+        pose_robot = np.radians(coord[3:])  # ⭐角度 → 弧度转换，确保姿态正确
+
+        RBT = self.CvtEulerAngleToRotationMatrix(pose_robot)  # 旋转矩阵
         PBT = np.array([[position_robot[0]],
                         [position_robot[1]],
                         [position_robot[2]]])
         temp = np.concatenate((RBT, PBT), axis=1)
         array_1x4 = np.array([[0, 0, 0, 1]])
-        matrix = np.concatenate((temp, array_1x4), axis=0)  # 将两个数组按行拼接起来
+        matrix = np.concatenate((temp, array_1x4), axis=0)  # 拼接为 4x4 齐次矩阵
         return matrix
+    
 
-    def Eyes_in_hand(self, coord, camera, Matrix_TC):
-        Position_Camera = np.transpose(camera[:3])  # 相机坐标
-        Matrix_BT = self.Transformation_matrix(coord)  # 机械臂坐标矩阵
+    def Eyes_in_hand(self, coord_tool, camera_pose, Matrix_TC):
+   
+        Matrix_BT = self.Transformation_matrix(coord_tool)  # 包含坐标+姿态（角度已转弧度）
+        pos_cam = camera_pose[:3]
+        rpy_cam = np.radians(camera_pose[3:])  # 角度 → 弧度
+        R_cam = self.CvtEulerAngleToRotationMatrix(rpy_cam)
+        t_cam = np.array([[pos_cam[0]], [pos_cam[1]], [pos_cam[2]]])
+        Matrix_CT = np.vstack((np.hstack((R_cam, t_cam)), [0, 0, 0, 1]))
+        Matrix_BT_target = Matrix_BT @ Matrix_TC @ Matrix_CT  # T_base_tool * T_tool_cam * T_cam_target
+        pos_base = Matrix_BT_target[:3, 3].flatten()
+        rpy_base = self.CvtRotationMatrixToEulerAngle(Matrix_BT_target[:3, :3])
+        rpy_base_deg = np.degrees(rpy_base)  # 转为角度输出
 
-        Position_Camera = np.append(Position_Camera, 1)  # 物体坐标（相机系）
-        Position_B = Matrix_BT @ Matrix_TC @ Position_Camera  # 物体坐标（基坐标系）
-        return Position_B
+    return np.concatenate((pos_base, rpy_base_deg))
 
     def camera_open_loop(self):
         while True:
