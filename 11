@@ -23,3 +23,29 @@ er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 grasp_control
 [DEBUG] 当前坐标 at grasp: [5.10 -128.90 356.60 -56.83 -0.90 -104.12]
 [DEBUG] 当前坐标 after lift: [6.90 -127.50 387.10 -58.30 -2.24 -104.72]
 [SUCCESS] 抓取完成
+
+(ros1 noetic py3)er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 camera_detect.py
+280
+make sure camera can observe the stag, enter any key quit
+[-178.57, 1.91, 120.51]
+Traceback (most recent call last):
+  File "camera_detect.py", line 413, in <module>
+    m.Eyes_in_hand_calibration(mc)
+  File "camera_detect.py", line 308, in Eyes_in_hand_calibration
+    pose, tbe, Mc, state = self.Matrix_identify(ml)
+  File "camera_detect.py", line 278, in Matrix_identify
+    Mc1,tbe1,pos1 = self.reg_get(ml)
+  File "camera_detect.py", line 341, in reg_get
+    Mc_all,_ = self.stag_identify()
+  File "camera_detect.py", line 235, in stag_identify
+    marker_pos_pack, ids = self.stag_identify()
+  File "camera_detect.py", line 235, in stag_identify
+    marker_pos_pack, ids = self.stag_identify()
+  File "camera_detect.py", line 235, in stag_identify
+    marker_pos_pack, ids = self.stag_identify()
+  [Previous line repeated 991 more times]
+  File "camera_detect.py", line 230, in stag_identify
+    self.camera.update_frame()  # 刷新相机界面
+  File "/home/er/catkin_ws/src/mycobot_vision/Visual_tracking-main/uvc_camera.py", line 30, in update_frame
+    ret, self.curr_color_frame = self.cap.read()
+RecursionError: maximum recursion depth exceeded while calling a Python object
