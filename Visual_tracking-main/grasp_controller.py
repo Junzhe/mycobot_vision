@@ -11,7 +11,7 @@ def grasp_from_stag_id(target_id: int):
     # 初始化机械臂
     mc = MyCobot280("/dev/ttyAMA0", 1000000)
     offset_j5 = -90 if mc.get_system_version() > 2 else 0
-    mc.send_angles([-90, 5, -104, 14, 90 + offset_j5, 0], 30)
+    mc.send_angles([-90, 5, -104, 14, 90 + offset_j5, 0], 60)
     time.sleep(2)
 
     # 初始化相机
