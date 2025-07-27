@@ -213,7 +213,7 @@ class camera_detect:
         rpy_base = self.CvtRotationMatrixToEulerAngle(Matrix_BT_target[:3, :3])
         rpy_base_deg = np.degrees(rpy_base)  # 转为角度输出
 
-    return np.concatenate((pos_base, rpy_base_deg))
+        return np.concatenate((pos_base, rpy_base_deg))
 
     def camera_open_loop(self):
         while True:
