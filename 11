@@ -1,15 +1,30 @@
-(ros1 noetic py3)er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 grasp_controller.py
+python3 camera_detect.py
 280
-请输入目标 STAG ID（如0）: 0
-[INFO] 手动指定 STAG ID = 0
-[INFO] 相机识别中...
-[DEBUG] 原始识别坐标: [51.30 -134.24 324.21 -177.71 0.15 -179.20]
-[INFO] 最终抓取坐标: [51.30 -134.24 324.21 -58.00 -2.00 -104.00]
-[DEBUG] 抬升预抓取坐标: [51.30 -134.24 354.21 -58.00 -2.00 -104.00]
-[DEBUG] 当前坐标 after above: [41.20 -137.50 354.40 -57.46 -1.64 -107.30]
-[DEBUG] 当前坐标 at grasp: [49.20 -137.90 321.10 -58.19 0.08 -104.38]
-[DEBUG] 当前坐标 after lift: [49.30 -137.50 351.80 -58.19 -1.19 -104.52]
-[SUCCESS] 抓取完成
+make sure camera can observe the stag, enter any key quit
+[-178.13, 2.67, 120.53]
+tbe =  [-62.80 -163.80 182.40]
+Mc =  [9.35 22.26 149.39]
+tbe =  [-12.60 -164.30 182.80]
+Mc =  [55.26 20.64 148.74]
+tbe =  [-12.80 -164.40 195.80]
+Mc =  [54.40 21.72 161.04]
+tbe =  [-12.00 -144.20 198.70]
+Mc =  [54.15 6.05 159.77]
+tbe =  [-42.00 -143.60 197.20]
+Mc =  [25.07 4.96 155.89]
+Move the end of the robot arm to the calibration point, press any key to release servo
+focus servo and get current coords
+[-20.1, -160.7, 24.7]
+EyesInHand_matrix =  [[0.50 0.85 0.18 -61.69]
+ [-0.87 0.48 0.14 16.19]
+ [0.03 -0.23 0.97 -281.79]
+ [0.00 0.00 0.00 1.00]]
+EyesInHand_matrix =  [[0.50 0.85 0.18 -61.69]
+ [-0.87 0.48 0.14 16.19]
+ [0.03 -0.23 0.97 -281.79]
+ [0.00 0.00 0.00 1.00]]
+save successe, wait to verify
+
 
 er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 grasp_controller.py
 280
