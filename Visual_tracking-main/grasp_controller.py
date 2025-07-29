@@ -24,16 +24,17 @@ def grasp_from_stag_id(target_id: int):
         print("[WARN] 目标 STAG ID 不在当前视野中")
         return False
 
-    # === ✅ 新增调试：打印相机坐标系下目标物位置 ===
+    # === ✅ 打印相机坐标系下目标物位置
     print(f"[DEBUG] 相机识别到目标物坐标 (camera coords):\n{np.round(marker_pos_pack, 2)}")
 
     # 获取转换后的目标坐标
     coords, ids = cd.stag_robot_identify(mc)
 
-    # === ✅ 新增调试：打印手眼标定矩阵 ===
-    print(f"[DEBUG] 当前使用的 EyesInHand_matrix:\n{np.round(cd.EyesInHand_matrix, 2)}")
+    # === ✅ 强制替换末端姿态为固定姿态（防止姿态错误引发目标变换误差）
+    coords[3:] = [-58, -2, -14 + offset_j5]
 
-    # === ✅ 新增调试：打印转换后目标坐标（基坐标系下） ===
+    # === ✅ 打印当前标定矩阵与转换后坐标
+    print(f"[DEBUG] 当前使用的 EyesInHand_matrix:\n{np.round(cd.EyesInHand_matrix, 2)}")
     print(f"[DEBUG] 转换后的目标物坐标 (base coords):\n{np.round(coords[:3], 2)}")
 
     cd.coord_limit(coords)
@@ -42,8 +43,6 @@ def grasp_from_stag_id(target_id: int):
     raw_coords = coords.copy()
     print(f"[DEBUG] 原始识别坐标: {np.round(raw_coords, 2)}")
 
-    # 设置末端姿态
-    coords[3:] = [-58, -2, -14 + offset_j5]
     print(f"[INFO] 最终抓取坐标: {np.round(coords, 2)}")
 
     try:
@@ -80,6 +79,4 @@ def grasp_from_stag_id(target_id: int):
 if __name__ == "__main__":
     try:
         tid = int(input("请输入目标 STAG ID（如0）: "))
-        grasp_from_stag_id(tid)
-    except Exception as e:
-        print(f"[输入错误] {e}")
+        grasp_from_stag_id_
