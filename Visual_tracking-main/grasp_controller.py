@@ -79,4 +79,6 @@ def grasp_from_stag_id(target_id: int):
 if __name__ == "__main__":
     try:
         tid = int(input("请输入目标 STAG ID（如0）: "))
-        grasp_from_stag_id_
+        grasp_from_stag_id(tid)
+    except Exception as e:
+        print(f"[输入错误] {e}")
