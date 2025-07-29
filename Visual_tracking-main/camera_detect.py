@@ -34,7 +34,7 @@ class camera_detect:
 
         self.origin_mycbot_horizontal = [42.36, -35.85, -52.91, 88.59, 90+offset_j5, 60.0]
         self.origin_mycbot_level = [-90, 5, -104, 14, 90 + offset_j5, 60]
-        self.IDENTIFY_LEN = 300 #to keep identify length
+        self.IDENTIFY_LEN = 300#to keep identify length
    
         # Initialize EyesInHand_matrix to None or load from a document if available
         self.EyesInHand_matrix = None
@@ -200,20 +200,13 @@ class camera_detect:
         return matrix
     
 
-    def Eyes_in_hand(self, coord_tool, camera_pose, Matrix_TC):
-   
-        Matrix_BT = self.Transformation_matrix(coord_tool)  # 包含坐标+姿态（角度已转弧度）
-        pos_cam = camera_pose[:3]
-        rpy_cam = np.radians(camera_pose[3:])  # 角度 → 弧度
-        R_cam = self.CvtEulerAngleToRotationMatrix(rpy_cam)
-        t_cam = np.array([[pos_cam[0]], [pos_cam[1]], [pos_cam[2]]])
-        Matrix_CT = np.vstack((np.hstack((R_cam, t_cam)), [0, 0, 0, 1]))
-        Matrix_BT_target = Matrix_BT @ Matrix_TC @ Matrix_CT  # T_base_tool * T_tool_cam * T_cam_target
-        pos_base = Matrix_BT_target[:3, 3].flatten()
-        rpy_base = self.CvtRotationMatrixToEulerAngle(Matrix_BT_target[:3, :3])
-        rpy_base_deg = np.degrees(rpy_base)  # 转为角度输出
+    def Eyes_in_hand(self, coord, camera, Matrix_TC):
+        Position_Camera = np.transpose(camera[:3])  # 相机坐标
+        Matrix_BT = self.Transformation_matrix(coord)  # 机械臂坐标矩阵
 
-        return np.concatenate((pos_base, rpy_base_deg))
+        Position_Camera = np.append(Position_Camera, 1)  # 物体坐标（相机系）
+        Position_B = Matrix_BT @ Matrix_TC @ Position_Camera  # 物体坐标（基坐标系）
+        return Position_B
 
     def camera_open_loop(self):
         while True:
