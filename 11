@@ -1,18 +1,46 @@
-(ros1 noetic py3)er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 fix_calibration.py
-[ERROR] 无法加载 EyesInHand_matrix.json，请确认路径正确: list indices must be integers or slices, not str
-
-er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 grasp_controller.py
+(ros1 noetic py3)er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 camera_detect.py
 280
-请输入目标 STAG ID（如0）: 0
-[INFO] 手动指定 STAG ID = 0
-[INFO] 相机识别中...
-[DEBUG] 原始识别坐标: [8.62 -126.22 358.24 -177.61 -0.57 178.83]
-[INFO] 最终抓取坐标: [8.62 -126.22 358.24 -58.00 -2.00 -104.00]
-[DEBUG] 抬升预抓取坐标: [8.62 -126.22 388.24 -58.00 -2.00 -104.00]
-[DEBUG] 当前坐标 after above: [7.20 -126.60 387.60 -57.68 -2.81 -104.36]
-[DEBUG] 当前坐标 at grasp: [5.10 -128.90 356.60 -56.83 -0.90 -104.12]
-[DEBUG] 当前坐标 after lift: [6.90 -127.50 387.10 -58.30 -2.24 -104.72]
-[SUCCESS] 抓取完成
+make sure camera can observe the stag, enter any key quit
+[-178.19, 2.51, 119.38]
+tbe =  [-62.90 -163.80 181.90]
+Mc =  [11.79 40.03 151.61]
+tbe =  [-12.90 -164.40 181.90]
+Mc =  [55.92 36.23 146.24]
+tbe =  [-12.80 -165.00 193.50]
+Mc =  [57.35 37.40 164.02]
+tbe =  [-12.00 -144.30 197.60]
+Mc =  [56.90 21.82 162.30]
+tbe =  [-42.30 -143.60 196.10]
+Mc =  [28.47 20.94 161.60]
+Move the end of the robot arm to the calibration point, press any key to release servo
+focus servo and get current coords
+[-11.2, -145.8, 22.7]
+EyesInHand_matrix =  [[0.54 0.84 0.05 -49.70]
+ [-0.84 0.54 0.09 29.67]
+ [0.05 -0.09 0.99 -33.69]
+ [0.00 0.00 0.00 1.00]]
+EyesInHand_matrix =  [[0.54 0.84 0.05 -49.70]
+ [-0.84 0.54 0.09 29.67]
+ [0.05 -0.09 0.99 -33.69]
+ [0.00 0.00 0.00 1.00]]
+save successe, wait to verify
+make sure camera can observe the stag, enter any key quit
+[-178.68, 1.07, 119.71]
+tbe =  [-63.00 -163.50 178.70]
+Mc =  [10.72 34.40 146.26]
+tbe =  [-13.20 -164.30 182.20]
+Mc =  [55.24 36.55 147.68]
+tbe =  [-13.10 -164.70 190.70]
+Mc =  [55.13 36.14 157.28]
+tbe =  [-13.00 -143.90 195.00]
+Mc =  [56.26 20.80 160.81]
+tbe =  [-42.60 -143.10 193.30]
+Mc =  [28.38 20.09 159.98]
+EyesInHand_matrix =  [[0.47 0.88 -0.09 -28.84]
+ [-0.88 0.47 -0.01 48.40]
+ [0.03 0.08 1.00 -37.77]
+ [0.00 0.00 0.00 1.00]]
+
 
 er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 test.py
 [INFO] 初始坐标: [-175.1  -177.5    30.4   -25.85   16.75 -131.16]
