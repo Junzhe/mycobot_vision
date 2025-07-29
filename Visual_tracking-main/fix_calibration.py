@@ -5,7 +5,13 @@ import json
 try:
     with open("EyesInHand_matrix.json", "r") as f:
         data = json.load(f)
-        T_tool_cam = np.array(data["matrix"])
+        # 支持纯数组或字典格式两种
+        if isinstance(data, list):
+            T_tool_cam = np.array(data)
+        elif isinstance(data, dict) and "matrix" in data:
+            T_tool_cam = np.array(data["matrix"])
+        else:
+            raise ValueError("JSON格式不正确，必须是列表或包含'matrix'键的字典")
     print("[INFO] 原始标定矩阵加载成功:\n", np.round(T_tool_cam, 2))
 except Exception as e:
     print("[ERROR] 无法加载 EyesInHand_matrix.json，请确认路径正确:", e)
