@@ -395,12 +395,12 @@ class camera_detect:
 if __name__ == "__main__":
     camera_params = np.load("camera_params.npz")  # 相机配置文件
     mtx, dist = camera_params["mtx"], camera_params["dist"]
-    m = camera_detect(1, 32, mtx, dist)
+    m = camera_detect(0, 40, mtx, dist)
     mc.set_vision_mode(0)
 
     # m.camera_open_loop()
     # m.stag_identify_loop()
     # m.stag_robot_identify_loop(mc)
-      m.Eyes_in_hand_calibration(mc)
+    m.Eyes_in_hand_calibration(mc)
     # m.vision_trace(0,mc)
     # m.vision_trace_loop(mc)
