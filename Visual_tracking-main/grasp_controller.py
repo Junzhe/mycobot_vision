@@ -1,5 +1,3 @@
-# grasp_controller.py（手动输入 STAG ID 调试版）
-
 import time
 import numpy as np
 from pymycobot import MyCobot280
@@ -26,7 +24,18 @@ def grasp_from_stag_id(target_id: int):
         print("[WARN] 目标 STAG ID 不在当前视野中")
         return False
 
-    coords, _ = cd.stag_robot_identify(mc)
+    # === ✅ 新增调试：打印相机坐标系下目标物位置 ===
+    print(f"[DEBUG] 相机识别到目标物坐标 (camera coords):\n{np.round(marker_pos_pack, 2)}")
+
+    # 获取转换后的目标坐标
+    coords, ids = cd.stag_robot_identify(mc)
+
+    # === ✅ 新增调试：打印手眼标定矩阵 ===
+    print(f"[DEBUG] 当前使用的 EyesInHand_matrix:\n{np.round(cd.EyesInHand_matrix, 2)}")
+
+    # === ✅ 新增调试：打印转换后目标坐标（基坐标系下） ===
+    print(f"[DEBUG] 转换后的目标物坐标 (base coords):\n{np.round(coords[:3], 2)}")
+
     cd.coord_limit(coords)
 
     # 原始坐标日志
