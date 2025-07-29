@@ -34,7 +34,7 @@ class camera_detect:
 
         self.origin_mycbot_horizontal = [42.36, -35.85, -52.91, 88.59, 90+offset_j5, 60.0]
         self.origin_mycbot_level = [-90, 5, -104, 14, 90 + offset_j5, 60]
-        self.IDENTIFY_LEN = 300#to keep identify length
+        self.IDENTIFY_LEN = 0 #to keep identify length
    
         # Initialize EyesInHand_matrix to None or load from a document if available
         self.EyesInHand_matrix = None
