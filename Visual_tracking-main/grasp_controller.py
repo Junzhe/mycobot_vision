@@ -15,7 +15,7 @@ def grasp_from_stag_id(target_id: int):
     time.sleep(2)
 
     # 初始化相机
-    camera_params = np.load("EyesInHand_matrix_fixed.npy")
+    camera_params = np.load("camera_params.npz")
     mtx, dist = camera_params["mtx"], camera_params["dist"]
     cd = camera_detect(0, 40, mtx, dist)  # 使用 40mm STAG 标定尺寸
 
