@@ -2,7 +2,7 @@ import numpy as np
 
 # === Step 1: 加载当前标定矩阵（EyesInHand_matrix.npy） ===
 try:
-    T_tool_cam = np.load("EyesInHand_matrix.npy")
+    T_tool_cam = np.load("EyesInHand_matrix.json")
     print("[INFO] 原始标定矩阵加载成功:\n", np.round(T_tool_cam, 2))
 except Exception as e:
     print("[ERROR] 无法加载 EyesInHand_matrix.npy，请确认路径正确:", e)
@@ -25,6 +25,6 @@ R_fixed = np.column_stack((x, y, z))
 T_tool_cam[:3, :3] = R_fixed
 
 # === Step 4: 保存修正后的矩阵 ===
-np.save("EyesInHand_matrix_fixed.npy", T_tool_cam)
-print("\n[✅] 修正后的 EyesInHand_matrix 已保存为 EyesInHand_matrix_fixed.npy")
+np.save("EyesInHand_matrix_fixed.json", T_tool_cam)
+print("\n[✅] 修正后的 EyesInHand_matrix 已保存为 EyesInHand_matrix_fixed.json")
 print("\n[RESULT] 修正后矩阵:\n", np.round(T_tool_cam, 2))
