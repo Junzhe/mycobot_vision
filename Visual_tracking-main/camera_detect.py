@@ -61,7 +61,7 @@ class camera_detect:
         
 
     def coord_limit(self, coords):
-        min_coord = [-350, -350, 300]
+        min_coord = [-350, -350, 10]
         max_coord = [350, 350, 500]
         for i in range(3):
             if(coords[i] < min_coord[i]):
