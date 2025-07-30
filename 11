@@ -19,3 +19,47 @@ er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 grasp_control
 [DEBUG] 当前坐标 at grasp: [-139.40 -124.40 326.70 -55.11 -1.61 -104.02]
 [DEBUG] 当前坐标 after lift: [-138.20 -124.40 326.80 -56.01 -1.30 -104.00]
 [SUCCESS] 抓取完成
+
+
+er@er:~/catkin_ws/src/mycobot_vision/Visual_tracking-main$ python3 camera_detect.py
+280
+make sure camera can observe the stag, enter any key quit
+[-177.98, 2.99, 120.1]
+tbe =  [-62.60 -164.10 182.30]
+Mc =  [-13.26 17.15 145.90]
+tbe =  [-11.10 -164.30 183.30]
+Mc =  [34.35 16.19 147.11]
+tbe =  [-10.90 -164.70 195.30]
+Mc =  [34.29 16.15 158.85]
+tbe =  [-12.80 -144.40 198.50]
+Mc =  [33.43 1.23 162.01]
+tbe =  [-42.10 -143.80 196.90]
+Mc =  [5.03 -0.63 160.25]
+Move the end of the robot arm to the calibration point, press any key to release servo
+focus servo and get current coords
+[11.6, -166.8, 29.3]
+EyesInHand_matrix =  [[0.51 0.86 -0.00 -38.34]
+ [-0.86 0.51 -0.00 46.11]
+ [-0.00 0.00 1.00 7.30]
+ [0.00 0.00 0.00 1.00]]
+EyesInHand_matrix =  [[0.51 0.86 -0.00 -38.34]
+ [-0.86 0.51 -0.00 46.11]
+ [-0.00 0.00 1.00 7.30]
+ [0.00 0.00 0.00 1.00]]
+save successe, wait to verify
+make sure camera can observe the stag, enter any key quit
+[-178.63, 1.85, 120.07]
+tbe =  [-62.60 -164.10 180.10]
+Mc =  [-13.68 13.90 146.39]
+tbe =  [-11.50 -164.40 182.70]
+Mc =  [33.65 15.55 145.57]
+tbe =  [-11.50 -164.50 193.60]
+Mc =  [33.73 16.45 157.53]
+tbe =  [-12.40 -144.40 195.70]
+Mc =  [33.65 0.19 159.59]
+tbe =  [-42.10 -143.80 194.00]
+Mc =  [4.24 -1.56 157.85]
+EyesInHand_matrix =  [[0.46 0.88 -0.06 -31.71]
+ [-0.88 0.47 0.03 40.34]
+ [0.05 0.04 1.00 5.69]
+ [0.00 0.00 0.00 1.00]]
