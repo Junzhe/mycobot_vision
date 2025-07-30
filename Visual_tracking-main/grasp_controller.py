@@ -27,8 +27,12 @@ def grasp_from_stag_id(target_id: int):
     # === ✅ 打印相机坐标系下目标物位置
     print(f"[DEBUG] 相机识别到目标物坐标 (camera coords):\n{np.round(marker_pos_pack, 2)}")
 
-    # 获取转换后的目标坐标
+    # 获取转换后的目标坐标（基坐标系下）
     coords, ids = cd.stag_robot_identify(mc)
+
+    # === ✅ 打印当前末端姿态（基坐标系下）——即 Matrix_BT 来源
+    current_tcp = mc.get_coords()
+    print(f"[DEBUG] 当前末端位姿 (末端在基坐标系下 Matrix_BT 来源): {np.round(current_tcp, 2)}")
 
     # === ✅ 强制替换末端姿态为固定姿态（防止姿态错误引发目标变换误差）
     coords[3:] = [-58, -2, -14 + offset_j5]
