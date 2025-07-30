@@ -40,14 +40,8 @@ def grasp_from_camera(detector, ml):
     print("Planned grasp pose:", target_pose)
 
     # === Step 6: 使用逆解函数求解角度并发送控制命令 ===
-    try:
-        target_angles = ml._coords_to_angles(target_pose)
-    except Exception as e:
-        print("Inverse kinematics failed:", e)
-        return
-
-    print("Sending joint angles:", target_angles)
-    ml.send_angles(target_angles, speed=40)
+    print("Sending target pose (via send_coords):", target_pose)
+    ml.send_coords(target_pose, speed=40)
     print("Grasping motion executed.")
 
 
