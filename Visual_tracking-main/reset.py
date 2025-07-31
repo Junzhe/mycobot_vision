@@ -12,7 +12,7 @@ def reset_robot():
     time.sleep(1)
 
     print("[INFO] 复位机械臂到默认安全位置...")
-    safe_angles = [-90, 5, -104, 14, 90 + offset_j5, 0]
+    safe_angles = [-90, 5, -104, 14, 90 + offset_j5, 60]
     mc.send_angles(safe_angles, 50)
     time.sleep(3)
 
