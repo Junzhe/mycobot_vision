@@ -6,8 +6,8 @@ from pymycobot import MyCobot280
 from camera_detect import camera_detect
 
 # === 参数配置 ===
-GRIPPER_Z_OFFSET = 100     # mm：夹爪前端长度补偿（末端提前停下）
-APPROACH_BUFFER = 20      # mm：安全接近缓冲（用于预抓取阶段）
+GRIPPER_Z_OFFSET = 110     # mm：夹爪前端长度补偿（末端提前停下）
+APPROACH_BUFFER = 50      # mm：安全接近缓冲（用于预抓取阶段）
 Z_OFFSET = 30             # mm：整体抬升高度
 LIFT_AFTER_GRASP = 50     # mm：抓取后上抬验证
 
@@ -67,7 +67,7 @@ def grasp_from_camera(detector, ml, target_id=None):
     try:
         # 打开夹爪准备抓取
         print("[ACTION] 打开夹爪...")
-        ml.set_gripper_state(0, 80)
+        ml.set_gripper_state(0, 60)
         time.sleep(2)
 
         print("[ACTION] 移动到抬升点...")
@@ -75,16 +75,16 @@ def grasp_from_camera(detector, ml, target_id=None):
         time.sleep(2)
 
         print("[ACTION] 下降至预接近点...")
-        ml.send_coords(approach, 30)
+        ml.send_coords(approach, 20)
         time.sleep(2)
 
         print("[ACTION] 缓慢下降至抓取点...")
-        ml.send_coords(grasp_coords, 20)
+        ml.send_coords(grasp_coords, 10)
         time.sleep(2)
 
         # 闭合夹爪抓取
         print("[ACTION] 闭合夹爪...")
-        ml.set_gripper_state(1, 80)
+        ml.set_gripper_state(1, 60)
         time.sleep(2)
 
         # 抬升验证
