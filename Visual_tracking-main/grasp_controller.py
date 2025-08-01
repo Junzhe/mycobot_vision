@@ -1,75 +1,123 @@
-import time
-import numpy as np
-from pymycobot import MyCobot280
+# grasp_server.py
+
+from flask import Flask, request
+from pymycobot import MyCobot280, PI_PORT, PI_BAUD
 from camera_detect import camera_detect
+import numpy as np
+import time
 
-def grasp_from_stag_id(target_id: int):
-    print(f"[INFO] 手动指定 STAG ID = {target_id}")
+# === 配置参数 ===
+PORT = 5000
+TARGET_ID_MAP = {"A": 0, "B": 1, "C": 2}  # 编号 → STAG ID 映射
+GRIPPER_Z_OFFSET = 110     # mm：夹爪前端长度补偿（末端提前停下）
+APPROACH_BUFFER = 50       # mm：安全接近缓冲（用于预抓取阶段）
+Z_OFFSET = 30              # mm：整体抬升高度
+LIFT_AFTER_GRASP = 50      # mm：抓取后上抬验证高度
 
-    # 初始化机械臂
-    mc = MyCobot280("/dev/ttyAMA0", 1000000)
-    offset_j5 = -90 if mc.get_system_version() > 2 else 0
-    mc.send_angles([-90, 5, -104, 14, 90 + offset_j5, 0], 60)
+# === 初始化 ===
+app = Flask(__name__)
+print("[INFO] 初始化机械臂与相机...")
+mc = MyCobot280(PI_PORT, PI_BAUD)
+offset_j5 = -90 if mc.get_system_version() > 2 else 0
+mc.send_angles([-90, 5, -104, 14, 90 + offset_j5, 60], 90)
+time.sleep(2)
+
+camera_params = np.load("camera_params.npz")
+mtx, dist = camera_params["mtx"], camera_params["dist"]
+detector = camera_detect(0, 40, mtx, dist)
+
+# === 夹爪控制函数 ===
+def open_gripper():
+    print("[ACTION] 打开夹爪...")
+    mc.set_gripper_state(0, 60)
     time.sleep(2)
 
-    # 初始化相机
-    camera_params = np.load("camera_params.npz")
-    mtx, dist = camera_params["mtx"], camera_params["dist"]
-    cd = camera_detect(0, 40, mtx, dist)  # 使用 40mm STAG 标定尺寸
+def close_gripper():
+    print("[ACTION] 闭合夹爪...")
+    mc.set_gripper_state(1, 60)
+    time.sleep(2)
 
-    # 识别目标
-    print("[INFO] 相机识别中...")
-    marker_pos_pack, ids = cd.stag_identify()
-    if ids is None or target_id not in ids.flatten():
-        print("[WARN] 目标 STAG ID 不在当前视野中")
+# === 抓取函数（从目标编号） ===
+def grasp_from_target_code(target_code: str):
+    target_id = TARGET_ID_MAP.get(target_code.upper(), None)
+    if target_id is None:
+        print(f"[ERROR] 无效目标编号：{target_code}")
         return False
 
-    print(f"[DEBUG] 相机识别到目标物坐标 (camera coords):\n{np.round(marker_pos_pack, 2)}")
-    coords, ids = cd.stag_robot_identify(mc)
-    current_tcp = mc.get_coords()
-    print(f"[DEBUG] 当前末端位姿 (末端在基坐标系下 Matrix_BT 来源): {np.round(current_tcp, 2)}")
-    coords[3:] = [-58, -2, -14 + offset_j5]
-    print(f"[DEBUG] 当前使用的 EyesInHand_matrix:\n{np.round(cd.EyesInHand_matrix, 2)}")
-    print(f"[DEBUG] 转换后的目标物坐标 (base coords):\n{np.round(coords[:3], 2)}")
-    cd.coord_limit(coords)
-    raw_coords = coords.copy()
-    print(f"[DEBUG] 原始识别坐标: {np.round(raw_coords, 2)}")
+    print(f"[INFO] 准备抓取目标编号：{target_code} → STAG ID: {target_id}")
+    marker_pos_pack, ids = detector.stag_identify()
+    if ids is None or target_id not in ids.flatten():
+        print("[WARN] 当前视野中未识别到指定目标")
+        return False
 
-    print(f"[INFO] 最终抓取坐标: {np.round(coords, 2)}")
+    # === 获取当前末端姿态并转换目标位置 ===
+    end_coords = mc.get_coords()
+    while end_coords is None:
+        end_coords = mc.get_coords()
+
+    T_be = detector.Transformation_matrix(end_coords)
+    position_cam = np.append(marker_pos_pack[:3], 1)
+    position_base = T_be @ detector.EyesInHand_matrix @ position_cam
+    xyz_base = position_base[:3].flatten()
+    rx, ry, rz = end_coords[3:6]
+
+    # === 构造抓取末端位姿（含夹爪Z补偿） ===
+    grasp_coords = [
+        xyz_base[0],
+        xyz_base[1],
+        xyz_base[2] + GRIPPER_Z_OFFSET,
+        rx, ry, rz
+    ]
+    detector.coord_limit(grasp_coords)
+
+    above = grasp_coords.copy()
+    above[2] += Z_OFFSET
+    detector.coord_limit(above)
+
+    approach = grasp_coords.copy()
+    approach[2] += APPROACH_BUFFER
+    detector.coord_limit(approach)
+
     try:
-        above = coords.copy()
-        above[2] += 30
-        print(f"[DEBUG] 抬升预抓取坐标: {np.round(above, 2)}")
+        # === 动作序列 ===
+        open_gripper()
 
-        # 移动到上方
+        print("[ACTION] 移动到抬升点...")
         mc.send_coords(above, 30)
         time.sleep(2)
-        print(f"[DEBUG] 当前坐标 after above: {np.round(mc.get_coords(), 2)}")
 
-        # 下移抓取
-        mc.send_coords(coords, 30)
+        print("[ACTION] 下降至预接近点...")
+        mc.send_coords(approach, 20)
         time.sleep(2)
-        print(f"[DEBUG] 当前坐标 at grasp: {np.round(mc.get_coords(), 2)}")
 
-        # 夹爪闭合
-        mc.set_gripper_state(1, 50)
-        time.sleep(1)
-
-        # 回到上方
-        mc.send_coords(above, 30)
+        print("[ACTION] 缓慢下降至抓取点...")
+        mc.send_coords(grasp_coords, 10)
         time.sleep(2)
-        print(f"[DEBUG] 当前坐标 after lift: {np.round(mc.get_coords(), 2)}")
+
+        close_gripper()
+
+        print("[ACTION] 上抬以验证抓取...")
+        lift = grasp_coords.copy()
+        lift[2] += LIFT_AFTER_GRASP
+        detector.coord_limit(lift)
+        mc.send_coords(lift, 30)
+        time.sleep(2)
 
         print("[SUCCESS] 抓取完成")
         return True
 
     except Exception as e:
-        print(f"[EXCEPTION] 抓取失败: {e}")
+        print(f"[ERROR] 抓取异常：{e}")
         return False
 
+# === HTTP 路由 ===
+@app.route("/target", methods=["POST"])
+def handle_target():
+    target = request.form.get("target")
+    print(f"\U0001F4E5 接收到目标编号：{target}")
+    success = grasp_from_target_code(target)
+    return "OK" if success else "FAIL"
+
+# === 启动服务 ===
 if __name__ == "__main__":
-    try:
-        tid = int(input("请输入目标 STAG ID（如0）: "))
-        grasp_from_stag_id(tid)
-    except Exception as e:
-        print(f"[输入错误] {e}")
+    app.run(host="0.0.0.0", port=PORT)
