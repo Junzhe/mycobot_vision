@@ -9,17 +9,17 @@ import time
 # === 配置参数 ===
 PORT = 5000
 TARGET_ID_MAP = {"A": 0, "B": 1, "C": 2}  # 编号 → STAG ID 映射
-GRIPPER_Z_OFFSET = 110     # mm：夹爪前端长度补偿（末端提前停下）
-APPROACH_BUFFER = 50       # mm：安全接近缓冲（用于预抓取阶段）
+GRIPPER_Z_OFFSET = 100     # mm：夹爪前端长度补偿（末端提前停下）
+APPROACH_BUFFER = 20       # mm：安全接近缓冲（用于预抓取阶段）
 Z_OFFSET = 30              # mm：整体抬升高度
-LIFT_AFTER_GRASP = 50      # mm：抓取后上抬验证高度
+LIFT_AFTER_GRASP = 60      # mm：抓取后上抬验证高度
 
 # === 初始化 ===
 app = Flask(__name__)
 print("[INFO] 初始化机械臂与相机...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 offset_j5 = -90 if mc.get_system_version() > 2 else 0
-mc.send_angles([-90, 5, -104, 14, 90 + offset_j5, 60], 90)
+mc.send_angles([-90, 5, -104, 14, 90 + offset_j5, 60], 60)
 time.sleep(2)
 
 camera_params = np.load("camera_params.npz")
@@ -29,12 +29,12 @@ detector = camera_detect(0, 40, mtx, dist)
 # === 夹爪控制函数 ===
 def open_gripper():
     print("[ACTION] 打开夹爪...")
-    mc.set_gripper_state(0, 60)
+    mc.set_gripper_state(0, 80)
     time.sleep(2)
 
 def close_gripper():
     print("[ACTION] 闭合夹爪...")
-    mc.set_gripper_state(1, 60)
+    mc.set_gripper_state(1, 80)
     time.sleep(2)
 
 # === 抓取函数（从目标编号） ===
@@ -91,7 +91,7 @@ def grasp_from_target_code(target_code: str):
         time.sleep(2)
 
         print("[ACTION] 缓慢下降至抓取点...")
-        mc.send_coords(grasp_coords, 10)
+        mc.send_coords(grasp_coords, 15)
         time.sleep(2)
 
         close_gripper()
