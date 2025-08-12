@@ -3,37 +3,43 @@
 # 依赖你的 camera_detect（STAG/手眼）、pymycobot
 
 from flask import Flask, request, jsonify
-import time, threading, json, h5py, numpy as np, cv2
+from pathlib import Path
+import time, threading, h5py, numpy as np, cv2
 from scipy.spatial.transform import Rotation as R
 from pymycobot import MyCobot280, PI_PORT, PI_BAUD
 from camera_detect import camera_detect
+import stag 
 
-# ====== 配置 ======
+ROOT = Path(__file__).resolve().parent
+DATA_DIR = ROOT / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+H5_DIR = str(DATA_DIR)
+
 PORT = 5055
-TARGET_ID_MAP = {"A": 0, "B": 1, "C": 2}   # 与你抓取程序保持一致
-H5_DIR = "/home/pi/bci_runtime/data"
+TARGET_ID_MAP = {"A": 0, "B": 1, "C": 2}   # 与你的 grasp_server 一致
 
-# ====== 全局状态 ======
 app = Flask(__name__)
 state = {"target_id": None, "phase": "idle", "recording": False}
-
-# ====== 初始化设备 / 相机 / 手眼 ======
 print("[INFO] 初始化机械臂与相机...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 time.sleep(1)
+CAM_PATH = ROOT / "camera_params.npz"
+EIH_PATH = ROOT / "EyesInHand_matrix.json"
 
-camera_params = np.load("camera_params.npz")
+camera_params = np.load(str(CAM_PATH))
 mtx, dist = camera_params["mtx"], camera_params["dist"]
-detector = camera_detect(0, 40, mtx, dist)   # 直接复用你的类
-# 你的类会在 __init__ 时尝试 load_matrix("EyesInHand_matrix.json")
-T_ee_cam = detector.EyesInHand_matrix        # 这是 T^T_C（相机->末端），正是我们要的
-assert T_ee_cam is not None, "未找到 EyesInHand_matrix.json，请先完成手眼标定"
+detector = camera_detect(0, 40, mtx, dist)   
+if detector.EyesInHand_matrix is None and EIH_PATH.exists():
+    detector.load_matrix(str(EIH_PATH))
 
-cam = detector.camera  # 复用 UVCCamera，避免重复打开设备
+T_ee_cam = detector.EyesInHand_matrix       
+assert T_ee_cam is not None, "未找到 EyesInHand_matrix.json，请先完成手眼标定并放在脚本同目录"
 
-# ====== 读取末端基座位姿（mm/deg→m/rad）======
+cam = detector.camera 
+
+
 def get_ee_state_rad():
-    """返回 [x,y,z, rx,ry,rz]，位置 m，姿态 rad（与 HDF5 低维状态一致）"""
+    """返回 [x,y,z, rx,ry,rz]，位置 m，姿态 rad（作为低维状态）"""
     coords = mc.get_coords()
     while (coords is None) or (len(coords) < 6):
         time.sleep(0.01)
@@ -44,7 +50,7 @@ def get_ee_state_rad():
                     dtype=np.float32)
 
 def get_T_be_from_coords(coords):
-    """用你自己的变换构造函数（内部会做角度→弧度）"""
+    """用你工程里的变换构造函数（内部做角度→弧度）"""
     return detector.Transformation_matrix(coords)  # coords: [x,y,z,rx,ry,rz] (mm/deg)
 
 # ====== 相机系Δ动作标签（由两帧末端位姿推导）======
@@ -69,7 +75,7 @@ def cam_delta_from_two_poses(prev_coords, now_coords):
     dw_C = R_cb @ rotvec_B
     return np.r_[dp_C, dw_C].astype(np.float32)
 
-# ====== 生成“选中ID”的二值掩码 ======
+# ====== 生成“选中ID”的二值掩码（仅 STAG，与你一致）======
 def detect_mask_bgr(frame_bgr, target_id_or_code):
     h, w = frame_bgr.shape[:2]
     mask = np.zeros((h, w), np.uint8)
@@ -84,11 +90,8 @@ def detect_mask_bgr(frame_bgr, target_id_or_code):
     if tid is None:
         return mask
 
-    # 优先 STAG（与你的工程一致）
     try:
-        # 你的 camera_detect.stag_identify() 走了 PnP，不返回角点；这里直接用 stag.detectMarkers
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-        corners, ids, _ = cv2.stag.detectMarkers(gray, 11)  # 11 与你一致
+        corners, ids, _ = stag.detectMarkers(frame_bgr, 11)  # 11：按你的项目
         if ids is not None:
             for c, i in zip(corners, ids):
                 if int(np.array(i).flatten()[0]) == tid:
@@ -98,29 +101,12 @@ def detect_mask_bgr(frame_bgr, target_id_or_code):
     except Exception:
         pass
 
-    # 可选回退：ArUco（需 opencv-contrib）——如果你只用 STAG，可删
-    if mask.sum() == 0:
-        try:
-            aruco = cv2.aruco
-            dict4 = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
-            detector_aruco = aruco.ArucoDetector(dict4, aruco.DetectorParameters())
-            corners, ids, _ = detector_aruco.detectMarkers(gray)
-            if ids is not None:
-                for c, i in zip(corners, ids):
-                    if int(np.array(i).flatten()[0]) == tid:
-                        poly = c.reshape(-1, 2).astype(np.int32)
-                        cv2.fillConvexPoly(mask, poly, 255)
-                        break
-        except Exception:
-            pass
-
     if mask.sum() > 0:
         k = np.ones((5,5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
         mask = cv2.dilate(mask, k, iterations=1)
     return mask
 
-# ====== 采集线程：循环读相机/末端，条件录入缓冲 ======
 buf = {"rgb": [], "mask": [], "state": [], "action": [],
        "cond_target": [], "cond_phase": [], "ts": []}
 lock = threading.Lock()
@@ -173,7 +159,7 @@ def writer_loop():
                 buf["rgb"].append(frame[..., ::-1])               # RGB
                 buf["mask"].append(mask)
                 buf["state"].append(lowdim)
-                buf["action"].append(np.r_[d6, 0.0].astype(np.float32))  # 6D + gripperΔ
+                buf["action"].append(np.r_[d6, 0.0].astype(np.float32))  # 6D + gripperΔ(先0)
                 buf["cond_target"].append(onehot)
                 buf["cond_phase"].append({"idle":0,"selected":1,"confirmed":2}.get(state["phase"],0))
                 buf["ts"].append(time.time() - t0)
@@ -185,9 +171,16 @@ thr.start()
 # ====== HTTP API ======
 @app.post("/bci/target")
 def api_target():
-    d = request.get_json(force=True)
-    state["target_id"] = d.get("id")
-    state["phase"] = d.get("phase", "selected")
+    # 兼容 JSON 和表单（与你原 grasp_server 保持兼容）
+    d = request.get_json(silent=True) or {}
+    if not d and request.form:
+        d = {"id": request.form.get("target", None), "phase": "selected"}
+    tid = d.get("id")
+    ph  = d.get("phase", "selected")
+    if tid is None:
+        return jsonify(ok=False, msg="need id or form 'target'"), 400
+    state["target_id"] = tid
+    state["phase"] = ph
     return jsonify(ok=True, target=state["target_id"], phase=state["phase"])
 
 @app.post("/record/start")
@@ -215,7 +208,7 @@ def api_stop():
         save("images/rgb",  buf["rgb"],  np.uint8)
         save("images/mask", buf["mask"], np.uint8)
         save("state",       buf["state"], np.float32)     # [x,y,z,rx,ry,rz,g]
-        save("action",      buf["action"], np.float32)    # [dx,dy,dz, dR, dP, dY, dGrip]
+        save("action",      buf["action"], np.float32)    # [dx,dy,dz, dR,dP,dY, dGrip]
         save("cond/target", buf["cond_target"], np.float32)
         save("cond/phase",  buf["cond_phase"], np.int32)
         save("time/ts",     buf["ts"], np.float64)
