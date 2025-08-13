@@ -6,26 +6,26 @@ from pymycobot import MyCobot280, PI_PORT, PI_BAUD
 from camera_detect import camera_detect
 import stag
 
+# ====== 路径与保存目录（项目内 data/）======
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 H5_DIR = str(DATA_DIR)
 
+# ====== 配置 ======
 PORT = 5055
-TARGET_ID_MAP = {"A": 0, "B": 1, "C": 2} 
+TARGET_ID_MAP = {"A": 0, "B": 1, "C": 2}
 
 # ====== 全局状态 ======
 app = Flask(__name__)
 state = {"target_id": None, "phase": "idle", "recording": False}
 
-# ====== 初始化设备 / 相机 / 手眼 ======
+# ====== 初始化机械臂 / 观测位 ======
 print("[INFO] 初始化机械臂与相机...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 time.sleep(0.5)
-
-# j5 偏置（与你的抓取程序一致）
 offset_j5 = -90 if mc.get_system_version() > 2 else 0
-OBS_POSE = [-90, 5, -104, 14, 90 + offset_j5, 60]   # 可观测初始位姿（水平俯视）
+OBS_POSE = [-90, 5, -104, 14, 90 + offset_j5, 60]  # 与你抓取程序一致
 
 def wait_stop(timeout=20.0):
     t0 = time.time()
@@ -38,28 +38,25 @@ def wait_stop(timeout=20.0):
         time.sleep(0.1)
 
 def goto_observe(speed=60):
-    """上电并回到观测位"""
-    try:
-        mc.power_on()
-    except Exception:
-        pass
+    try: mc.power_on()
+    except Exception: pass
     time.sleep(0.5)
     mc.send_angles(OBS_POSE, speed)
     wait_stop(25.0)
 
-# 启动时回到观测位（与 grasp_server 一致）
+# 启动回到观测位
 goto_observe()
 
-# 相机与手眼
+# ====== 相机 / 手眼 ======
 CAM_PATH = ROOT / "camera_params.npz"
 EIH_PATH = ROOT / "EyesInHand_matrix.json"
 camera_params = np.load(str(CAM_PATH))
 mtx, dist = camera_params["mtx"], camera_params["dist"]
-detector = camera_detect(0, 40, mtx, dist)   # 你的类会在 __init__ 尝试 load_matrix()
+detector = camera_detect(0, 40, mtx, dist)
 if detector.EyesInHand_matrix is None and EIH_PATH.exists():
     detector.load_matrix(str(EIH_PATH))
 T_ee_cam = detector.EyesInHand_matrix
-assert T_ee_cam is not None, "未找到 EyesInHand_matrix.json，请先完成手眼标定并放在脚本同目录"
+assert T_ee_cam is not None, "未找到 EyesInHand_matrix.json，请先标定并放同目录"
 cam = detector.camera
 
 # ====== 末端基座位姿（mm/deg→m/rad）======
@@ -95,14 +92,12 @@ def cam_delta_from_two_poses(prev_coords, now_coords):
 def detect_mask_bgr(frame_bgr, target_id_or_code):
     h, w = frame_bgr.shape[:2]
     mask = np.zeros((h, w), np.uint8)
-    if target_id_or_code is None:
-        return mask
+    if target_id_or_code is None: return mask
     if isinstance(target_id_or_code, str):
         tid = TARGET_ID_MAP.get(target_id_or_code.upper(), None)
     else:
         tid = int(target_id_or_code)
-    if tid is None:
-        return mask
+    if tid is None: return mask
     try:
         corners, ids, _ = stag.detectMarkers(frame_bgr, 11)
         if ids is not None:
@@ -227,7 +222,7 @@ def api_goto_obs():
     goto_observe(sp)
     return jsonify(ok=True, pose=OBS_POSE)
 
-# ====== IK 老师抓取（与你 grasp_server 的动作序列一致）======
+# ====== IK 老师抓取（只做“抓取”，不负责放回）======
 GRIPPER_Z_OFFSET = 100
 APPROACH_BUFFER  = 20
 Z_OFFSET         = 30
