@@ -26,7 +26,7 @@ mc = MyCobot280(PI_PORT, PI_BAUD)
 time.sleep(0.5)
 offset_j5 = -90 if mc.get_system_version() > 2 else 0
 # 你当前使用的观察位（远离桌面，视角不变）
-OBS_POSE = [-90, 5, -104, 14, 90 + offset_j5, 60]
+OBS_POSE = [-90, 5, -45, -40, 90 + offset_j5, 60]
 
 def wait_stop(timeout=20.0):
     t0 = time.time()
