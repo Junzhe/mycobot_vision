@@ -7,14 +7,12 @@ PORT = 5066
 TARGET_ID_MAP = {"A":0,"B":1,"C":2}
 
 app = Flask(__name__)
-current_target = None   # 手机/AR 设置后记住
+current_target = None   
 
 print("[INFO] init robot & camera ...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 time.sleep(1)
-
-# 若需要可放开初始位姿（能看清工位即可）
-# mc.send_angles([-90, 5, -104, 14, 0, 60], 40); time.sleep(2)
+mc.send_angles([-90, 5, -104, 14, 0, 60], 40); time.sleep(2)
 
 cam_params = np.load("camera_params.npz")
 mtx, dist = cam_params["mtx"], cam_params["dist"]
