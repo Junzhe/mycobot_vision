@@ -12,7 +12,7 @@ current_target = None
 print("[INFO] init robot & camera ...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 time.sleep(1)
-mc.send_angles([-90, 5, -104, 14, 0, 60], 40); time.sleep(2)
+mc.send_angles([-90, 5, -90, 14, 0, 60], 40); time.sleep(2)
 
 cam_params = np.load("camera_params.npz")
 mtx, dist = cam_params["mtx"], cam_params["dist"]
