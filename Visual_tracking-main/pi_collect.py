@@ -25,7 +25,8 @@ print("[INFO] 初始化机械臂与相机...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 time.sleep(0.5)
 offset_j5 = -90 if mc.get_system_version() > 2 else 0
-OBS_POSE = [-90, 5, -45, -40, 90 + offset_j5, 60]  # 与你抓取程序一致
+# 你当前使用的观察位（远离桌面，视角不变）
+OBS_POSE = [-90, 5, -45, -40, 90 + offset_j5, 60]
 
 def wait_stop(timeout=20.0):
     t0 = time.time()
@@ -38,8 +39,10 @@ def wait_stop(timeout=20.0):
         time.sleep(0.1)
 
 def goto_observe(speed=60):
-    try: mc.power_on()
-    except Exception: pass
+    try:
+        mc.power_on()
+    except Exception:
+        pass
     time.sleep(0.5)
     mc.send_angles(OBS_POSE, speed)
     wait_stop(25.0)
@@ -61,6 +64,7 @@ cam = detector.camera
 
 # ====== 末端基座位姿（mm/deg→m/rad）======
 def get_ee_state_rad():
+    """返回 [x,y,z,rx,ry,rz]（m/rad），用于 HDF5 的 state 通道。"""
     coords = mc.get_coords()
     while (coords is None) or (len(coords) < 6):
         time.sleep(0.01)
@@ -71,33 +75,40 @@ def get_ee_state_rad():
                     dtype=np.float32)
 
 def get_T_be_from_coords(coords):
+    """基于你项目里的函数：输入 mm/deg，输出 4x4 齐次（平移单位与输入一致, 即 mm）。"""
     return detector.Transformation_matrix(coords)
 
 # ====== 相机系Δ动作标签（由两帧末端位姿推导）======
 def cam_delta_from_two_poses(prev_coords, now_coords):
-    T_be_prev = get_T_be_from_coords(prev_coords)
+    """
+    输出上一帧相机系的 6D 增量：[dx,dy,dz, dRx,dRy,dRz]
+    单位：平移=mm（与齐次矩阵一致），旋转=rad
+    ——关键修正：不再对相机系增量重复旋转，直接用 inv(T_prev)@T_now 的结果。
+    """
+    T_be_prev = get_T_be_from_coords(prev_coords)  # mm/deg → 4x4(mm)
     T_be_now  = get_T_be_from_coords(now_coords)
     T_bc_prev = T_be_prev @ T_ee_cam
     T_bc_now  = T_be_now  @ T_ee_cam
-    T_delta_B = np.linalg.inv(T_bc_prev) @ T_bc_now
-    dR = R.from_matrix(T_delta_B[:3, :3])
-    rotvec_B = dR.as_rotvec()
-    dp_B = T_delta_B[:3, 3]
-    R_cb = T_bc_prev[:3, :3].T
-    dp_C = R_cb @ dp_B
-    dw_C = R_cb @ rotvec_B
-    return np.r_[dp_C, dw_C].astype(np.float32)
+
+    # 这就是“上一帧相机坐标系”表达的相机相对位姿
+    T_delta = np.linalg.inv(T_bc_prev) @ T_bc_now
+
+    dp_C = T_delta[:3, 3].astype(np.float32)                         # mm
+    dw_C = R.from_matrix(T_delta[:3, :3]).as_rotvec().astype(np.float32)  # rad
+    return np.r_[dp_C, dw_C]
 
 # ====== 掩码（仅涂选中 STAG ID）======
 def detect_mask_bgr(frame_bgr, target_id_or_code):
     h, w = frame_bgr.shape[:2]
     mask = np.zeros((h, w), np.uint8)
-    if target_id_or_code is None: return mask
+    if target_id_or_code is None:
+        return mask
     if isinstance(target_id_or_code, str):
         tid = TARGET_ID_MAP.get(target_id_or_code.upper(), None)
     else:
         tid = int(target_id_or_code)
-    if tid is None: return mask
+    if tid is None:
+        return mask
     try:
         corners, ids, _ = stag.detectMarkers(frame_bgr, 11)
         if ids is not None:
@@ -109,7 +120,7 @@ def detect_mask_bgr(frame_bgr, target_id_or_code):
     except Exception:
         pass
     if mask.sum() > 0:
-        k = np.ones((5,5), np.uint8)
+        k = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
         mask = cv2.dilate(mask, k, iterations=1)
     return mask
@@ -122,9 +133,11 @@ h5file = None
 running = True
 
 def reset_buffers():
-    for k in buf: buf[k].clear()
+    for k in buf:
+        buf[k].clear()
 
 def writer_loop():
+    # 用原始 coords（mm/deg）推导标签最稳
     prev_coords = mc.get_coords()
     while prev_coords is None or len(prev_coords) < 6:
         time.sleep(0.01)
@@ -141,15 +154,16 @@ def writer_loop():
         if now_coords is None or len(now_coords) < 6:
             time.sleep(0.005); continue
 
-        d6 = cam_delta_from_two_poses(prev_coords, now_coords)
+        d6 = cam_delta_from_two_poses(prev_coords, now_coords)  # [mm,mm,mm, rad,rad,rad]
         prev_coords = now_coords
 
+        # 低维状态（m/rad + gripper）
         st = get_ee_state_rad()
         g = 0.0
-        lowdim = np.r_[st, g].astype(np.float32)
+        lowdim = np.r_[st, g].astype(np.float32)  # 7-dim
 
+        # 目标掩码 & 条件
         mask = detect_mask_bgr(frame, state["target_id"])
-
         onehot = np.zeros(3, np.float32)
         if isinstance(state["target_id"], str) and state["target_id"].upper() in TARGET_ID_MAP:
             idx = TARGET_ID_MAP[state["target_id"].upper()]
@@ -159,8 +173,8 @@ def writer_loop():
             if state["recording"] and h5file is not None:
                 buf["rgb"].append(frame[..., ::-1])               # RGB
                 buf["mask"].append(mask)
-                buf["state"].append(lowdim)
-                buf["action"].append(np.r_[d6, 0.0].astype(np.float32))  # 6D + gripperΔ
+                buf["state"].append(lowdim)                       # m/rad
+                buf["action"].append(np.r_[d6, 0.0].astype(np.float32))  # mm/rad + dGrip(0)
                 buf["cond_target"].append(onehot)
                 buf["cond_phase"].append({"idle":0,"selected":1,"confirmed":2}.get(state["phase"],0))
                 buf["ts"].append(time.time() - t0)
@@ -168,6 +182,15 @@ def writer_loop():
 
 thr = threading.Thread(target=writer_loop, daemon=True)
 thr.start()
+
+# ====== 夹爪工具 ======
+def _open_gripper(sp=80):
+    try: mc.set_gripper_state(0, sp)
+    except Exception: pass
+
+def _close_gripper(sp=80):
+    try: mc.set_gripper_state(1, sp)
+    except Exception: pass
 
 # ====== API：目标、录制、回观测位、健康 ======
 @app.post("/bci/target")
@@ -190,31 +213,55 @@ def api_start():
     with lock:
         reset_buffers()
         h5file = h5py.File(fname, "w")
+        # 文件级元数据（与检查脚本一致）
+        h5file.attrs["target_id"]   = state["target_id"] or ""
+        h5file.attrs["st_pos_unit"] = "m"
+        h5file.attrs["st_rot_unit"] = "rad"
+        h5file.attrs["ac_pos_unit"] = "mm"   # 本脚本的 Δpos 以 mm 存
+        h5file.attrs["ac_rot_unit"] = "rad"
         state["recording"] = True
-        h5file.attrs["target_id"] = state["target_id"] or ""
     return jsonify(ok=True, file=fname)
 
 @app.post("/record/stop")
 def api_stop():
+    """
+    停录后：写盘 → （默认）松爪 → 回观察位
+    可用 JSON 关闭：{"release": false, "back_to_obs": false}
+    """
+    d = request.get_json(silent=True) or {}
+    do_release = d.get("release", True)
+    do_back    = d.get("back_to_obs", True)
+
     global h5file
     with lock:
         state["recording"] = False
         if h5file is None:
             return jsonify(ok=False, msg="no open file")
         g = h5file.create_group("frames")
+
         def save(name, arr, dtype=None):
             a = np.asarray(arr, dtype=dtype) if dtype else np.asarray(arr)
             g.create_dataset(name, data=a, compression="gzip")
+
         save("images/rgb",  buf["rgb"],  np.uint8)
         save("images/mask", buf["mask"], np.uint8)
-        save("state",       buf["state"], np.float32)     # [x,y,z,rx,ry,rz,g]
-        save("action",      buf["action"], np.float32)    # [dx,dy,dz, dR,dP,dY, dGrip]
+        save("state",       buf["state"], np.float32)     # [x,y,z,rx,ry,rz,g] (m/rad)
+        save("action",      buf["action"], np.float32)    # [dx,dy,dz,dR,dP,dY,dGrip] (mm/rad)
         save("cond/target", buf["cond_target"], np.float32)
         save("cond/phase",  buf["cond_phase"], np.int32)
         save("time/ts",     buf["ts"], np.float64)
+
         path = h5file.filename
         h5file.close(); h5file = None
-    return jsonify(ok=True, file=path)
+
+    # —— 停录后的动作（先松爪再回观测位）——
+    if do_release:
+        _open_gripper(sp=80)
+        time.sleep(0.5)
+    if do_back:
+        goto_observe(speed=60)
+
+    return jsonify(ok=True, file=path, released=do_release, back_to_obs=do_back)
 
 @app.post("/goto_obs")
 def api_goto_obs():
@@ -227,9 +274,6 @@ GRIPPER_Z_OFFSET = 100
 APPROACH_BUFFER  = 20
 Z_OFFSET         = 30
 LIFT_AFTER_GRASP = 60
-
-def _open_gripper(sp=80):  mc.set_gripper_state(0, sp)
-def _close_gripper(sp=80): mc.set_gripper_state(1, sp)
 
 def _find_target_base_xyz(selected_id: int):
     cam.update_frame()
@@ -244,10 +288,13 @@ def _find_target_base_xyz(selected_id: int):
     one_ids = np.array([[selected_id]], dtype=np.int32)
     target_cam = detector.calc_markers_base_position(one_corners, one_ids)
     if target_cam is None or len(target_cam) < 3: return None
+
     end_coords = mc.get_coords()
-    while end_coords is None: time.sleep(0.01); end_coords = mc.get_coords()
+    while end_coords is None:
+        time.sleep(0.01); end_coords = mc.get_coords()
+
     T_be = detector.Transformation_matrix(end_coords)
-    p_cam = np.array([target_cam[0], target_cam[1], target_cam[2], 1.0], dtype=float)
+    p_cam  = np.array([target_cam[0], target_cam[1], target_cam[2], 1.0], dtype=float)
     p_base = (T_be @ T_ee_cam @ p_cam).flatten()[:3]
     return p_base, end_coords
 
@@ -270,7 +317,9 @@ def api_demo_grasp():
     xyz_base, end_coords = found
     rx, ry, rz = end_coords[3:6]
 
-    grasp = [float(xyz_base[0]), float(xyz_base[1]), float(xyz_base[2] + GRIPPER_Z_OFFSET),
+    grasp = [float(xyz_base[0]),
+             float(xyz_base[1]),
+             float(xyz_base[2] + GRIPPER_Z_OFFSET),
              float(rx), float(ry), float(rz)]
     above = grasp.copy();    above[2]    += Z_OFFSET
     approach = grasp.copy(); approach[2] += APPROACH_BUFFER
