@@ -1,7 +1,8 @@
+# target_test.py  —— 发目标编号到 pi_collect（端口 5055）
 import time, argparse, requests
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--pi", required=True, help="http://10.7.182.37:5000")
+ap.add_argument("--pi", required=True, help="http://<pi-ip>:5055")
 ap.add_argument("--target", required=True, choices=["A","B","C"])
 ap.add_argument("--repeat", type=int, default=1)
 ap.add_argument("--interval", type=float, default=1.0)
