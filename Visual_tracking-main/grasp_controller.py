@@ -19,7 +19,7 @@ app = Flask(__name__)
 print("[INFO] 初始化机械臂与相机...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 offset_j5 = -90 if mc.get_system_version() > 2 else 0
-mc.send_angles([-90, 5, -104, 14, 90 + offset_j5, 60], 60)
+mc.send_angles([-90, 5, -45, -40, 90 + offset_j5, 60], 60)
 time.sleep(2)
 
 camera_params = np.load("camera_params.npz")
