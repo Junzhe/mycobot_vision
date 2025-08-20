@@ -95,4 +95,254 @@ def cam_delta_from_two_poses(prev_coords, now_coords):
 
     dp_C = T_delta[:3, 3].astype(np.float32)                         # mm
     dw_C = R.from_matrix(T_delta[:3, :3]).as_rotvec().astype(np.float32)  # rad
-    return np.r_[dp_C,_]()_
+    return np.r_[dp_C, dw_C]
+
+# ====== 掩码（仅涂选中 STAG ID）======
+def detect_mask_bgr(frame_bgr, target_id_or_code):
+    h, w = frame_bgr.shape[:2]
+    mask = np.zeros((h, w), np.uint8)
+    if target_id_or_code is None:
+        return mask
+    if isinstance(target_id_or_code, str):
+        tid = TARGET_ID_MAP.get(target_id_or_code.upper(), None)
+    else:
+        tid = int(target_id_or_code)
+    if tid is None:
+        return mask
+    try:
+        corners, ids, _ = stag.detectMarkers(frame_bgr, 11)
+        if ids is not None:
+            for c, i in zip(corners, ids):
+                if int(np.array(i).flatten()[0]) == tid:
+                    poly = np.asarray(c).reshape(-1, 2).astype(np.int32)
+                    cv2.fillConvexPoly(mask, poly, 255)
+                    break
+    except Exception:
+        pass
+    if mask.sum() > 0:
+        k = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+        mask = cv2.dilate(mask, k, iterations=1)
+    return mask
+
+# ====== 采集线程 ======
+buf = {"rgb": [], "mask": [], "state": [], "action": [],
+       "cond_target": [], "cond_phase": [], "ts": []}
+lock = threading.Lock()
+h5file = None
+running = True
+
+def reset_buffers():
+    for k in buf:
+        buf[k].clear()
+
+def writer_loop():
+    # 用原始 coords（mm/deg）推导标签最稳
+    prev_coords = mc.get_coords()
+    while prev_coords is None or len(prev_coords) < 6:
+        time.sleep(0.01)
+        prev_coords = mc.get_coords()
+
+    t0 = time.time()
+    while running:
+        cam.update_frame()
+        frame = cam.color_frame()
+        if frame is None:
+            time.sleep(0.01); continue
+
+        now_coords = mc.get_coords()
+        if now_coords is None or len(now_coords) < 6:
+            time.sleep(0.005); continue
+
+        d6 = cam_delta_from_two_poses(prev_coords, now_coords)  # [mm,mm,mm, rad,rad,rad]
+        prev_coords = now_coords
+
+        # 低维状态（m/rad + gripper）
+        st = get_ee_state_rad()
+        g = 0.0
+        lowdim = np.r_[st, g].astype(np.float32)  # 7-dim
+
+        # 目标掩码 & 条件
+        mask = detect_mask_bgr(frame, state["target_id"])
+        onehot = np.zeros(3, np.float32)
+        if isinstance(state["target_id"], str) and state["target_id"].upper() in TARGET_ID_MAP:
+            idx = TARGET_ID_MAP[state["target_id"].upper()]
+            onehot[idx] = 1.0
+
+        with lock:
+            if state["recording"] and h5file is not None:
+                buf["rgb"].append(frame[..., ::-1])               # RGB
+                buf["mask"].append(mask)
+                buf["state"].append(lowdim)                       # m/rad
+                buf["action"].append(np.r_[d6, 0.0].astype(np.float32))  # mm/rad + dGrip(0)
+                buf["cond_target"].append(onehot)
+                buf["cond_phase"].append({"idle":0,"selected":1,"confirmed":2}.get(state["phase"],0))
+                buf["ts"].append(time.time() - t0)
+        time.sleep(0.001)
+
+thr = threading.Thread(target=writer_loop, daemon=True)
+thr.start()
+
+# ====== 夹爪工具 ======
+def _open_gripper(sp=80):
+    try: mc.set_gripper_state(0, sp)
+    except Exception: pass
+
+def _close_gripper(sp=80):
+    try: mc.set_gripper_state(1, sp)
+    except Exception: pass
+
+# ====== API：目标、录制、回观测位、健康 ======
+@app.post("/bci/target")
+def api_target():
+    d = request.get_json(silent=True) or {}
+    if not d and request.form:
+        d = {"id": request.form.get("target", None), "phase": "selected"}
+    tid = d.get("id")
+    ph  = d.get("phase", "selected")
+    if tid is None:
+        return jsonify(ok=False, msg="need id or form 'target'"), 400
+    state["target_id"] = tid
+    state["phase"] = ph
+    return jsonify(ok=True, target=state["target_id"], phase=state["phase"])
+
+@app.post("/record/start")
+def api_start():
+    global h5file
+    fname = f"{H5_DIR}/epi_{int(time.time())}.hdf5"
+    with lock:
+        reset_buffers()
+        h5file = h5py.File(fname, "w")
+        # 文件级元数据（与检查脚本一致）
+        h5file.attrs["target_id"]   = state["target_id"] or ""
+        h5file.attrs["st_pos_unit"] = "m"
+        h5file.attrs["st_rot_unit"] = "rad"
+        h5file.attrs["ac_pos_unit"] = "mm"   # 本脚本的 Δpos 以 mm 存
+        h5file.attrs["ac_rot_unit"] = "rad"
+        state["recording"] = True
+    return jsonify(ok=True, file=fname)
+
+@app.post("/record/stop")
+def api_stop():
+    """
+    停录后：写盘 → （默认）松爪 → 回观察位
+    可用 JSON 关闭：{"release": false, "back_to_obs": false}
+    """
+    d = request.get_json(silent=True) or {}
+    do_release = d.get("release", True)
+    do_back    = d.get("back_to_obs", True)
+
+    global h5file
+    with lock:
+        state["recording"] = False
+        if h5file is None:
+            return jsonify(ok=False, msg="no open file")
+        g = h5file.create_group("frames")
+
+        def save(name, arr, dtype=None):
+            a = np.asarray(arr, dtype=dtype) if dtype else np.asarray(arr)
+            g.create_dataset(name, data=a, compression="gzip")
+
+        save("images/rgb",  buf["rgb"],  np.uint8)
+        save("images/mask", buf["mask"], np.uint8)
+        save("state",       buf["state"], np.float32)     # [x,y,z,rx,ry,rz,g] (m/rad)
+        save("action",      buf["action"], np.float32)    # [dx,dy,dz,dR,dP,dY,dGrip] (mm/rad)
+        save("cond/target", buf["cond_target"], np.float32)
+        save("cond/phase",  buf["cond_phase"], np.int32)
+        save("time/ts",     buf["ts"], np.float64)
+
+        path = h5file.filename
+        h5file.close(); h5file = None
+
+    # —— 停录后的动作（先松爪再回观测位）——
+    if do_release:
+        _open_gripper(sp=80)
+        time.sleep(0.5)
+    if do_back:
+        goto_observe(speed=60)
+
+    return jsonify(ok=True, file=path, released=do_release, back_to_obs=do_back)
+
+@app.post("/goto_obs")
+def api_goto_obs():
+    sp = int((request.get_json(silent=True) or {}).get("speed", 60))
+    goto_observe(sp)
+    return jsonify(ok=True, pose=OBS_POSE)
+
+# ====== IK 老师抓取（只做“抓取”，不负责放回）======
+GRIPPER_Z_OFFSET = 100
+APPROACH_BUFFER  = 20
+Z_OFFSET         = 30
+LIFT_AFTER_GRASP = 60
+
+def _find_target_base_xyz(selected_id: int):
+    cam.update_frame()
+    frame = cam.color_frame()
+    corners, ids, _ = stag.detectMarkers(frame, 11)
+    if ids is None: return None
+    ids = np.array(ids).flatten()
+    idxs = np.where(ids == selected_id)[0]
+    if len(idxs) == 0: return None
+    idx = int(idxs[0])
+    one_corners = [corners[idx]]
+    one_ids = np.array([[selected_id]], dtype=np.int32)
+    target_cam = detector.calc_markers_base_position(one_corners, one_ids)
+    if target_cam is None or len(target_cam) < 3: return None
+
+    end_coords = mc.get_coords()
+    while end_coords is None:
+        time.sleep(0.01); end_coords = mc.get_coords()
+
+    T_be = detector.Transformation_matrix(end_coords)
+    p_cam  = np.array([target_cam[0], target_cam[1], target_cam[2], 1.0], dtype=float)
+    p_base = (T_be @ T_ee_cam @ p_cam).flatten()[:3]
+    return p_base, end_coords
+
+@app.post("/demo_grasp")
+def api_demo_grasp():
+    d = request.get_json(silent=True) or {}
+    sp = int(d.get("speed", 30))
+
+    tid_code = state.get("target_id")
+    if isinstance(tid_code, str):
+        tid = TARGET_ID_MAP.get(tid_code.upper(), None)
+    else:
+        tid = int(tid_code) if tid_code is not None else None
+    if tid is None:
+        return jsonify(ok=False, msg="no target id, call /bci/target first"), 400
+
+    found = _find_target_base_xyz(tid)
+    if found is None:
+        return jsonify(ok=False, msg="stag id not found in view"), 404
+    xyz_base, end_coords = found
+    rx, ry, rz = end_coords[3:6]
+
+    grasp = [float(xyz_base[0]),
+             float(xyz_base[1]),
+             float(xyz_base[2] + GRIPPER_Z_OFFSET),
+             float(rx), float(ry), float(rz)]
+    above = grasp.copy();    above[2]    += Z_OFFSET
+    approach = grasp.copy(); approach[2] += APPROACH_BUFFER
+    lift = grasp.copy();     lift[2]     += LIFT_AFTER_GRASP
+
+    detector.coord_limit(grasp); detector.coord_limit(above)
+    detector.coord_limit(approach); detector.coord_limit(lift)
+
+    try:
+        mc.power_on(); time.sleep(0.5)
+        _open_gripper()
+        mc.send_coords(above,    sp); time.sleep(2)
+        mc.send_coords(approach, sp); time.sleep(2)
+        mc.send_coords(grasp,    max(15, sp//2)); time.sleep(2)
+        _close_gripper()
+        mc.send_coords(lift,     sp); time.sleep(2)
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(ok=False, msg=str(e)), 500
+
+@app.get("/health")
+def api_health():
+    return jsonify(ok=True, **state)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=PORT, threaded=True)
