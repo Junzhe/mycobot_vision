@@ -10,9 +10,9 @@ import time
 PORT = 5000
 TARGET_ID_MAP = {"A": 0, "B": 1, "C": 2}  # 编号 → STAG ID 映射
 GRIPPER_Z_OFFSET = 100     # mm：夹爪前端长度补偿（末端提前停下）
-APPROACH_BUFFER = 20       # mm：安全接近缓冲（用于预抓取阶段）
-Z_OFFSET = 30              # mm：整体抬升高度
-LIFT_AFTER_GRASP = 60      # mm：抓取后上抬验证高度
+APPROACH_BUFFER = 25       # mm：安全接近缓冲（用于预抓取阶段）
+Z_OFFSET = 45              # mm：整体抬升高度
+LIFT_AFTER_GRASP = 100      # mm：抓取后上抬验证高度
 
 # === 初始化 ===
 app = Flask(__name__)
@@ -24,7 +24,7 @@ time.sleep(2)
 
 camera_params = np.load("camera_params.npz")
 mtx, dist = camera_params["mtx"], camera_params["dist"]
-detector = camera_detect(0, 40, mtx, dist)
+detector = camera_detect(0, 25, mtx, dist)
 
 # === 夹爪控制函数 ===
 def open_gripper():
