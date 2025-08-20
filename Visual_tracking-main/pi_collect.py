@@ -55,7 +55,7 @@ CAM_PATH = ROOT / "camera_params.npz"
 EIH_PATH = ROOT / "EyesInHand_matrix.json"
 camera_params = np.load(str(CAM_PATH))
 mtx, dist = camera_params["mtx"], camera_params["dist"]
-detector = camera_detect(0, 40, mtx, dist)
+detector = camera_detect(0, 25, mtx, dist)
 if detector.EyesInHand_matrix is None and EIH_PATH.exists():
     detector.load_matrix(str(EIH_PATH))
 T_ee_cam = detector.EyesInHand_matrix
