@@ -1,7 +1,6 @@
-# pi_collect.py
-from flask import Flask, request, jsonify, Response, render_template_string
+from flask import Flask, request, jsonify
 from pathlib import Path
-import time, threading, h5py, numpy as np, cv2, io
+import time, threading, h5py, numpy as np, cv2
 from scipy.spatial.transform import Rotation as R
 from pymycobot import MyCobot280, PI_PORT, PI_BAUD
 from camera_detect import camera_detect
@@ -94,4 +93,6 @@ def cam_delta_from_two_poses(prev_coords, now_coords):
     # 这就是“上一帧相机坐标系”表达的相机相对位姿
     T_delta = np.linalg.inv(T_bc_prev) @ T_bc_now
 
-    d
+    dp_C = T_delta[:3, 3].astype(np.float32)                         # mm
+    dw_C = R.from_matrix(T_delta[:3, :3]).as_rotvec().astype(np.float32)  # rad
+    return np.r_[dp_C,_]()_
