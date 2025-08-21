@@ -33,7 +33,7 @@ print("[INFO] 初始化机械臂与相机...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 time.sleep(0.5)
 offset_j5 = -90 if mc.get_system_version() > 2 else 0
-OBS_POSE = [-90, 5, -45, -40, 90 + offset_j5, 60]   # 观测位（可按需调整）
+OBS_POSE = [-90, 5, -45, -40, 90 + offset_j5, 65]   # 观测位（可按需调整）
 
 def now_mono() -> float:
     return float(time.monotonic())
