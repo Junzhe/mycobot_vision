@@ -1,42 +1,52 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, Response
 from pathlib import Path
-import io, time, threading, h5py, numpy as np, cv2
+import time, threading, io, json
+import h5py, numpy as np, cv2
 from scipy.spatial.transform import Rotation as R
 from pymycobot import MyCobot280, PI_PORT, PI_BAUD
 from camera_detect import camera_detect
 import stag
 
+# ========= 路径/目录 =========
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 H5_DIR = str(DATA_DIR)
 
+# ========= 配置 =========
 PORT = 5055
 TARGET_ID_MAP = {"A": 0, "B": 1, "C": 2}
-# 抓取参数
-GRIPPER_Z_OFFSET = 100     # mm：末端提前停下（抓取前的高度补偿）
-APPROACH_BUFFER  = 20      # mm：预接近
-Z_OFFSET         = 30      # mm：上方准备点抬升
-LIFT_AFTER_GRASP = 60      # mm：闭合后上抬验证
-FIND_TAG_DICT_ID = 11      # STAG 字典号
+
+# 观察位（关节角，deg）
+OBS_POSE_BASE = [-90, 5, -45, -40, 90, 60]   # j5 的 -90 偏置视固件而定，见下 offset_j5
+# 夹爪中心相对法兰（末端坐标系）的偏移（mm）：默认沿 -Z 100 mm
+GRASP_LOCK_OFFSET_MM = np.array([0.0, 0.0, -100.0], dtype=np.float32)
+
+# 末端-相机外参存放路径
+CAM_PATH = ROOT / "camera_params.npz"
+EIH_PATH = ROOT / "EyesInHand_matrix.json"
 
 # ========= 全局状态 =========
 app = Flask(__name__)
 state = {
-    "target_id": None,   # "A"/"B"/"C" or None
-    "phase": "idle",     # idle/selected/confirmed
-    "recording": False
+    "target_id": None,           # "A"|"B"|"C"|None
+    "phase": "idle",             # "idle"|"selected"|"approach"|"confirmed"
+    "recording": False,
+    "locked": False,             # 是否已抓取后锁定
+    "last_cmd": None,            # 最近一次命令快照（字典）
+    "gripper_closed": False,     # 最近一次夹爪状态（0/1）
 }
 
-# ========= 初始化机械臂 =========
+# ========= 初始化机械臂/相机 =========
 print("[INFO] 初始化机械臂与相机...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 time.sleep(0.5)
-offset_j5 = -90 if mc.get_system_version() > 2 else 0
-OBS_POSE = [-90, 5, -45, -40, 90 + offset_j5, 55]   # 观测位（可按需调整）
-
-def now_mono() -> float:
-    return float(time.monotonic())
+try:
+    offset_j5 = -90 if mc.get_system_version() > 2 else 0
+except Exception:
+    offset_j5 = 0
+OBS_POSE = OBS_POSE_BASE.copy()
+OBS_POSE[4] = OBS_POSE[4] + offset_j5
 
 def wait_stop(timeout=20.0):
     t0 = time.time()
@@ -48,61 +58,65 @@ def wait_stop(timeout=20.0):
             pass
         time.sleep(0.05)
 
-# ========= 相机/手眼 =========
-CAM_PATH = ROOT / "camera_params.npz"
-EIH_PATH = ROOT / "EyesInHand_matrix.json"
+def goto_observe(speed=60):
+    try:
+        mc.power_on()
+    except Exception:
+        pass
+    time.sleep(0.3)
+    mc.send_angles(OBS_POSE, speed)
+    wait_stop(25.0)
+
+# 启动回到观测位
+goto_observe()
+
+# 相机与手眼
 camera_params = np.load(str(CAM_PATH))
 mtx, dist = camera_params["mtx"], camera_params["dist"]
-detector = camera_detect(0, 25, mtx, dist)  # 目标 25fps
+# 第二个参数是曝光/增益/帧率相关控制，按你项目需求设置；这里用 25
+detector = camera_detect(0, 25, mtx, dist)
 if detector.EyesInHand_matrix is None and EIH_PATH.exists():
     detector.load_matrix(str(EIH_PATH))
 T_ee_cam = detector.EyesInHand_matrix
-assert T_ee_cam is not None, "未找到 EyesInHand_matrix.json，请先标定并放同目录"
+assert T_ee_cam is not None, "未找到 EyesInHand_matrix.json，请先完成手眼标定并放在同目录"
+T_ee_cam = np.array(T_ee_cam, dtype=np.float32).reshape(4,4)
 cam = detector.camera
 
-# ========= 读当前传感 =========
-def get_coords_mmdeg() -> np.ndarray:
-    """末端 mm/deg（阻塞获取）"""
-    coords = mc.get_coords()
-    while (coords is None) or (len(coords) < 6):
-        time.sleep(0.005)
-        coords = mc.get_coords()
-    return np.array(coords, dtype=np.float32)
+# ========= 常用工具 =========
+def get_coords_blocking():
+    c = mc.get_coords()
+    while (c is None) or (len(c) < 6):
+        time.sleep(0.01)
+        c = mc.get_coords()
+    return c  # [x,y,z,rx,ry,rz] mm/deg
 
-def get_angles_deg() -> np.ndarray:
-    """6关节角 deg（阻塞获取）"""
-    ang = mc.get_angles()
-    while (ang is None) or (len(ang) < 6):
-        time.sleep(0.005)
-        ang = mc.get_angles()
-    return np.array(ang, dtype=np.float32)
+def get_angles_blocking():
+    a = mc.get_angles()
+    while (a is None) or (len(a) < 6):
+        time.sleep(0.01)
+        a = mc.get_angles()
+    return a  # [j1..j6], deg
 
-def T_from_coords_mmdeg(coords: np.ndarray) -> np.ndarray:
-    """输入末端 coords(mm/deg) → 4x4 齐次（平移 mm）"""
-    return detector.Transformation_matrix(coords)
+def trans_from_coords_mmdeg(coords):
+    """输入 coords=[x,y,z,rx,ry,rz] (mm/deg) → 4x4 齐次（平移单位 mm）"""
+    return detector.Transformation_matrix(coords)  # 已是 mm/deg→4x4(mm)
 
-def rvec_deg_from_rotm(Rm: np.ndarray) -> np.ndarray:
-    rv = R.from_matrix(Rm[:3, :3]).as_rotvec()   # rad
-    return np.rad2deg(rv).astype(np.float32)
-
-# ========= 目标检测 =========
-def detect_mask_bgr(frame_bgr, target_id_or_code):
+def stag_mask(frame_bgr, wanted_id):
     h, w = frame_bgr.shape[:2]
     mask = np.zeros((h, w), np.uint8)
-    if target_id_or_code is None:
+    if wanted_id is None:
         return mask
-    if isinstance(target_id_or_code, str):
-        tid = TARGET_ID_MAP.get(target_id_or_code.upper(), None)
+    if isinstance(wanted_id, str):
+        tid = TARGET_ID_MAP.get(wanted_id.upper(), None)
     else:
-        tid = int(target_id_or_code)
+        tid = int(wanted_id)
     if tid is None:
         return mask
     try:
-        corners, ids, _ = stag.detectMarkers(frame_bgr, FIND_TAG_DICT_ID)
+        corners, ids, _ = stag.detectMarkers(frame_bgr, 11)
         if ids is not None:
-            ids = np.array(ids).flatten()
             for c, i in zip(corners, ids):
-                if int(i) == tid:
+                if int(np.array(i).flatten()[0]) == tid:
                     poly = np.asarray(c).reshape(-1, 2).astype(np.int32)
                     cv2.fillConvexPoly(mask, poly, 255)
                     break
@@ -114,404 +128,382 @@ def detect_mask_bgr(frame_bgr, target_id_or_code):
         mask = cv2.dilate(mask, k, iterations=1)
     return mask
 
-def find_target_positions(frame_bgr, T_be):
-    """
-    返回:
-      visible: int(0/1)
-      p_cam: (3,) 目标在相机系(mm)
-      p_base: (3,) 目标在基座系(mm)
-    检测不到时 (0, nan, nan)
-    """
-    visible = 0
-    p_cam = np.full(3, np.nan, np.float32)
-    p_base = np.full(3, np.nan, np.float32)
-
-    tid_code = state.get("target_id")
-    if isinstance(tid_code, str):
-        tid = TARGET_ID_MAP.get(tid_code.upper(), None)
-    else:
-        tid = int(tid_code) if tid_code is not None else None
-    if tid is None:
-        return visible, p_cam, p_base
-
+def stag_target_cam(frame_bgr, wanted_id):
+    """返回 (pos_cam_mm[3], visible:bool, mask)"""
+    mask = stag_mask(frame_bgr, wanted_id)
     try:
-        corners, ids, _ = stag.detectMarkers(frame_bgr, FIND_TAG_DICT_ID)
+        corners, ids, _ = stag.detectMarkers(frame_bgr, 11)
         if ids is None:
-            return visible, p_cam, p_base
+            return (np.full(3, np.nan, np.float32), False, mask)
         ids = np.array(ids).flatten()
+        tid = TARGET_ID_MAP.get(wanted_id, None) if isinstance(wanted_id, str) else wanted_id
+        if tid is None:
+            return (np.full(3, np.nan, np.float32), False, mask)
         idxs = np.where(ids == tid)[0]
         if len(idxs) == 0:
-            return visible, p_cam, p_base
-
-        one_corners = [corners[int(idxs[0])]]
+            return (np.full(3, np.nan, np.float32), False, mask)
+        idx = int(idxs[0])
+        one_corners = [corners[idx]]
         one_ids = np.array([[tid]], dtype=np.int32)
-        target_cam = detector.calc_markers_base_position(one_corners, one_ids)
-        if target_cam is None or len(target_cam) < 3:
-            return visible, p_cam, p_base
-
-        p_cam = np.array(target_cam[:3], dtype=np.float32)
-        p4 = np.r_[p_cam.astype(float), 1.0]
-        p_base = (T_be @ T_ee_cam @ p4)[:3].astype(np.float32)
-        visible = 1
-        return visible, p_cam, p_base
+        pos_cam = detector.calc_markers_base_position(one_corners, one_ids)  # 相机系 3d(mm)
+        if pos_cam is None or len(pos_cam) < 3:
+            return (np.full(3, np.nan, np.float32), False, mask)
+        return (np.array(pos_cam[:3], dtype=np.float32), True, mask)
     except Exception:
-        return 0, p_cam, p_base
+        return (np.full(3, np.nan, np.float32), False, mask)
 
-# ========= 记录缓冲 =========
+def se3_delta(T_prev, T_now):
+    """Δ = inv(T_prev) @ T_now → [dx,dy,dz, dRx,dRy,dRz] (mm, rad)"""
+    Td = np.linalg.inv(T_prev) @ T_now
+    dp = Td[:3, 3]
+    dw = R.from_matrix(Td[:3, :3]).as_rotvec()
+    return np.r_[dp, dw].astype(np.float32)
+
+# ========= 采集缓存 =========
 buf = {
-    "rgb": [], "mask": [],
-    "state": [],
-    "action_cam": [], "action_base": [],
-    "vel_cam": [], "vel_base": [],
-    "joints": [], "joints_vel": [],
-    "T_be": [], "T_bc": [],
-    "target_cam": [], "target_base": [], "target_vis": [],
-    "cond_target": [], "cond_phase": [],
-    "ts": [], "dt": [],
-    "cmd_type": [], "cmd_speed": [], "cmd_coords": [], "cmd_angles": [], "cmd_gripper": [], "cmd_time": []
+    "images/rgb": [],       # [N,H,W,3] uint8 RGB
+    "images/mask": [],      # [N,H,W]   uint8 (0/255)
+    "state": [],            # [N,7]  [x,y,z,rx,ry,rz,g] (mm/deg + gripper)
+    "time/ts": [],          # [N]  float64
+    "time/dt": [],          # [N]  float64
+    # joints
+    "joints/angles_deg": [],    # [N,6]
+    "joints/vel_deg_s": [],     # [N,6]
+    # poses
+    "poses/T_be_mm": [],        # [N,4,4]
+    "poses/T_bc_mm": [],        # [N,4,4]
+    # actions (cam/base Δpose) + velocities
+    "action_cam": [],           # [N,7]  dx,dy,dz(mm),dRx,dRy,dRz(rad), dGrip
+    "action_base": [],          # [N,7]
+    "vel_cam": [],              # [N,7]  ≈ action/dt
+    "vel_base": [],             # [N,7]
+    # command snapshots per-frame
+    "cmd/type": [],             # [N] int {0:none,1:coords,2:angles,3:gripper}
+    "cmd/speed": [],            # [N] float
+    "cmd/coords_mmdeg": [],     # [N,6]  last send_coords goal
+    "cmd/angles_deg": [],       # [N,6]  last send_angles goal
+    "cmd/gripper": [],          # [N] int -1|0|1
+    "cmd/time": [],             # [N] float (monotonic)
+    # condition
+    "cond/target": [],          # [N,3] onehot
+    "cond/phase": [],           # [N] int {0:idle,1:selected,2:approach,3:confirmed}
+    # target
+    "target/cam_mm": [],        # [N,3]  may be NaN
+    "target/base_mm": [],       # [N,3]  hold/lock策略后
+    "target/visible": [],       # [N] uint8 0/1
 }
 lock = threading.Lock()
 h5file = None
 running = True
 
-# —— 目标保持/随夹爪 —— #
-last_target_base = None
-last_target_cam  = None
-
-# ========= 真实命令封装 =========
-# type: 0=none, 1=send_coords, 2=send_angles, 3=gripper
-last_cmd = {
-    "type": 0,
-    "speed": np.float32(np.nan),
-    "coords": np.full(6, np.nan, np.float32),
-    "angles": np.full(6, np.nan, np.float32),
-    "gripper": np.int32(-1),     # -1=none, 0=open, 1=close
-    "time": np.float64(np.nan)
+# 运行中变量（上一帧）
+last = {
+    "ts": None,                 # monotonic
+    "coords": None,             # mm/deg
+    "angles": None,             # deg
+    "T_be": None,               # 4x4 mm
+    "T_bc": None,               # 4x4 mm
+    "jvel": np.zeros(6, np.float32),
+    "grip": 0.0,
+    "target_base_hold": None,   # 抓取前不可见时的静态保持（基座系）
 }
-cmd_lock = threading.Lock()
 
-def snapshot_cmd():
-    with cmd_lock:
-        return {
-            "type": int(last_cmd["type"]),
-            "speed": float(last_cmd["speed"]),
-            "coords": last_cmd["coords"].copy(),
-            "angles": last_cmd["angles"].copy(),
-            "gripper": int(last_cmd["gripper"]),
-            "time": float(last_cmd["time"]),
-        }
-
-def send_coords_logged(coords_mmdeg, speed=30):
-    coords = [float(v) for v in coords_mmdeg]
-    mc.send_coords(coords, int(speed))
-    with cmd_lock:
-        last_cmd["type"] = 1
-        last_cmd["speed"] = np.float32(speed)
-        last_cmd["coords"] = np.array(coords, dtype=np.float32)
-        last_cmd["angles"] = np.full(6, np.nan, np.float32)
-        last_cmd["gripper"] = np.int32(-1)
-        last_cmd["time"] = np.float64(now_mono())
-
-def send_angles_logged(angles_deg, speed=30):
-    angles = [float(v) for v in angles_deg]
-    mc.send_angles(angles, int(speed))
-    with cmd_lock:
-        last_cmd["type"] = 2
-        last_cmd["speed"] = np.float32(speed)
-        last_cmd["coords"] = np.full(6, np.nan, np.float32)
-        last_cmd["angles"] = np.array(angles, dtype=np.float32)
-        last_cmd["gripper"] = np.int32(-1)
-        last_cmd["time"] = np.float64(now_mono())
-
-def set_gripper_logged(open_or_close, speed=80):
-    try:
-        mc.set_gripper_state(int(open_or_close), int(speed))
-    except Exception:
-        pass
-    with cmd_lock:
-        last_cmd["type"] = 3
-        last_cmd["speed"] = np.float32(speed)
-        last_cmd["coords"] = np.full(6, np.nan, np.float32)
-        last_cmd["angles"] = np.full(6, np.nan, np.float32)
-        last_cmd["gripper"] = np.int32(open_or_close)  # 0=open,1=close
-        last_cmd["time"] = np.float64(now_mono())
-
-# ========= 采集线程 =========
 def reset_buffers():
     for k in buf:
         buf[k].clear()
 
-def writer_loop():
-    global last_target_base, last_target_cam
-    # 初始
-    prev_coords = get_coords_mmdeg()
-    prev_angles = get_angles_deg()
-    prev_T_be = T_from_coords_mmdeg(prev_coords)
-    prev_T_bc = prev_T_be @ T_ee_cam
-    prev_t = now_mono()
+def snapshot_cmd(now_t):
+    """将 state['last_cmd'] 快照到 buf 的 cmd/*（每帧都填）"""
+    lc = state.get("last_cmd") or {}
+    ctype = int(lc.get("type", 0))
+    speed = float(lc.get("speed", np.nan)) if ctype in (1,2) else (float(lc.get("speed", np.nan)) if ctype==3 else np.nan)
+    coords = np.array(lc.get("coords_mmdeg", [np.nan]*6), dtype=np.float32)
+    angles = np.array(lc.get("angles_deg", [np.nan]*6), dtype=np.float32)
+    grip   = int(lc.get("gripper", -1))
+    ctime  = float(lc.get("time", now_t))
+    buf["cmd/type"].append(ctype)
+    buf["cmd/speed"].append(speed)
+    buf["cmd/coords_mmdeg"].append(coords)
+    buf["cmd/angles_deg"].append(angles)
+    buf["cmd/gripper"].append(grip)
+    buf["cmd/time"].append(ctime)
 
+def phase_int(p):
+    return {"idle":0,"selected":1,"approach":2,"confirmed":3}.get(p,0)
+
+def writer_loop():
+    global h5file
+    # 初始化上一帧
+    last["coords"] = get_coords_blocking()
+    last["angles"] = np.array(get_angles_blocking(), dtype=np.float32)
+    last["T_be"]   = trans_from_coords_mmdeg(last["coords"])
+    last["T_bc"]   = last["T_be"] @ T_ee_cam
+    last["ts"]     = time.monotonic()
+
+    t0 = time.monotonic()
     while running:
         cam.update_frame()
         frame = cam.color_frame()
         if frame is None:
             time.sleep(0.003); continue
 
-        now_coords = get_coords_mmdeg()
-        now_angles = get_angles_deg()
-        now_T_be = T_from_coords_mmdeg(now_coords)
-        now_T_bc = now_T_be @ T_ee_cam
+        # 读取当前状态
+        now_coords = get_coords_blocking()
+        now_angles = np.array(get_angles_blocking(), dtype=np.float32)
+        T_be = trans_from_coords_mmdeg(now_coords)
+        T_bc = T_be @ T_ee_cam
 
-        now_t = now_mono()
-        dt = float(max(1e-4, now_t - prev_t))
-        prev_t = now_t
+        now_t = time.monotonic()
+        dt = max(1e-4, now_t - (last["ts"] or now_t))
 
-        # Δpose（相机系/基座系）
-        T_delta_cam = np.linalg.inv(prev_T_bc) @ now_T_bc
-        dpos_cam = T_delta_cam[:3, 3].astype(np.float32)
-        dang_cam = rvec_deg_from_rotm(T_delta_cam)
+        # 关节速度（差分）
+        jvel = (now_angles - last["angles"]) / dt
 
-        T_delta_base = np.linalg.inv(prev_T_be) @ now_T_be
-        dpos_base = T_delta_base[:3, 3].astype(np.float32)
-        dang_base = rvec_deg_from_rotm(T_delta_base)
+        # 动作：相机/基座系 Δpose（上一帧→当前帧）
+        d_cam  = se3_delta(last["T_bc"], T_bc)
+        d_base = se3_delta(last["T_be"], T_be)
 
-        vel_cam = np.r_[dpos_cam, dang_cam] / dt
-        vel_base = np.r_[dpos_base, dang_base] / dt
+        # 末端低维（mm/deg + gripper）
+        g = 1.0 if state.get("gripper_closed", False) else 0.0
+        st = np.r_[now_coords, g].astype(np.float32)
 
-        # 关节速度
-        joints_vel = (now_angles - prev_angles) / dt
+        # 目标观测与 hold/lock
+        tid = state.get("target_id")
+        pos_cam, visible, mask = stag_target_cam(frame, tid)
 
-        # 目标
-        vis, p_cam, p_base = find_target_positions(frame, now_T_be)
-        phase = state.get("phase", "idle")
-        if vis == 0:
-            if phase in ("idle", "selected") and (last_target_base is not None):
-                # 保持上一帧（桌面静止）
-                p_base = last_target_base.copy()
-                inv_T = np.linalg.inv(now_T_be @ T_ee_cam)
-                p4 = np.r_[p_base.astype(float), 1.0]
-                p_cam = (inv_T @ p4)[:3].astype(np.float32)
+        # 计算 target/base_mm
+        if not state.get("locked", False):
+            # 抓取前：可见→投到基座；不可见→静态保持
+            if visible:
+                p_cam_h = np.r_[pos_cam.astype(np.float32), 1.0]
+                p_base = (T_be @ T_ee_cam @ p_cam_h)[:3].astype(np.float32)
+                last["target_base_hold"] = p_base.copy()
+            else:
+                # 如果未可见，保持上一帧基座位置（桌面假设静止）
+                if last["target_base_hold"] is None:
+                    # 初始不可见时，置 NaN
+                    p_base = np.full(3, np.nan, np.float32)
+                else:
+                    p_base = last["target_base_hold"].copy()
+
+            # 触发锁定：phase>=confirmed 或者 最近一次夹爪命令=闭合
+            if phase_int(state.get("phase","idle")) >= 3 or state.get("gripper_closed", False):
+                state["locked"] = True
         else:
-            last_target_base = p_base.copy()
-            last_target_cam  = p_cam.copy()
+            # 抓取后锁定：目标 = 法兰原点 + R_be @ 偏移(末端坐标系)
+            R_be = T_be[:3,:3].astype(np.float32)
+            t_be = T_be[:3, 3].astype(np.float32)
+            p_base = (t_be + R_be @ GRASP_LOCK_OFFSET_MM).astype(np.float32)
+            # 抓取后，pos_cam 多半不可见，允许 pos_cam=NaN
+            visible = False
+            pos_cam = np.full(3, np.nan, np.float32)
 
-        if phase == "confirmed":
-            # 抓后随夹爪（可加固定偏移）
-            p_base = now_T_be[:3, 3].astype(np.float32)
-            p_cam  = (T_ee_cam @ np.array([0,0,0,1.0])).astype(np.float32)[:3]
-            vis = 0
+        # 相机/基座“速度”（≈ Δ/dt）
+        v_cam  = np.r_[d_cam[:6] / dt, 0.0].astype(np.float32)
+        v_base = np.r_[d_base[:6] / dt, 0.0].astype(np.float32)
 
-        # 低维状态 [x,y,z,rx,ry,rz,g]
-        x, y, z, rx, ry, rz = now_coords.tolist()
-        g = 0.0
-        lowdim = np.array([x, y, z, rx, ry, rz, g], dtype=np.float32)
-
-        # 掩码 & 条件
-        mask = detect_mask_bgr(frame, state["target_id"])
+        # 条件 onehot
         onehot = np.zeros(3, np.float32)
-        if isinstance(state["target_id"], str) and state["target_id"].upper() in TARGET_ID_MAP:
-            idx = TARGET_ID_MAP[state["target_id"].upper()]
-            onehot[idx] = 1.0
+        if isinstance(tid, str) and tid.upper() in TARGET_ID_MAP:
+            onehot[TARGET_ID_MAP[tid.upper()]] = 1.0
 
-        # 命令快照
-        cmd = snapshot_cmd()
-
+        # 组包写缓存
         with lock:
-            if state["recording"] and h5file is not None:
-                buf["rgb"].append(frame[..., ::-1])  # RGB
-                buf["mask"].append(mask)
-                buf["state"].append(lowdim)
-                buf["action_cam"].append(np.r_[dpos_cam, dang_cam, 0.0].astype(np.float32))
-                buf["action_base"].append(np.r_[dpos_base, dang_base, 0.0].astype(np.float32))
-                buf["vel_cam"].append(vel_cam.astype(np.float32))
-                buf["vel_base"].append(vel_base.astype(np.float32))
-                buf["joints"].append(now_angles.astype(np.float32))
-                buf["joints_vel"].append(joints_vel.astype(np.float32))
-                buf["T_be"].append(now_T_be.astype(np.float32))
-                buf["T_bc"].append(now_T_bc.astype(np.float32))
-                buf["target_cam"].append(p_cam.astype(np.float32))
-                buf["target_base"].append(p_base.astype(np.float32))
-                buf["target_vis"].append(np.int32(vis))
-                buf["cond_target"].append(onehot)
-                buf["cond_phase"].append({"idle":0,"selected":1,"confirmed":2}.get(state["phase"],0))
-                buf["ts"].append(now_t)
-                buf["dt"].append(dt)
-                buf["cmd_type"].append(np.int32(cmd["type"]))
-                buf["cmd_speed"].append(np.float32(cmd["speed"]))
-                buf["cmd_coords"].append(cmd["coords"].astype(np.float32))
-                buf["cmd_angles"].append(cmd["angles"].astype(np.float32))
-                buf["cmd_gripper"].append(np.int32(cmd["gripper"]))
-                buf["cmd_time"].append(np.float64(cmd["time"]))
+            if state.get("recording", False) and (h5file is not None):
+                # 图像
+                buf["images/rgb"].append(frame[..., ::-1].astype(np.uint8))  # RGB
+                buf["images/mask"].append(mask.astype(np.uint8))
+                # 末端+时间
+                buf["state"].append(st)
+                buf["time/ts"].append(now_t - t0)
+                buf["time/dt"].append(dt)
+                # joints/poses
+                buf["joints/angles_deg"].append(now_angles)
+                buf["joints/vel_deg_s"].append(jvel.astype(np.float32))
+                buf["poses/T_be_mm"].append(T_be.astype(np.float32))
+                buf["poses/T_bc_mm"].append(T_bc.astype(np.float32))
+                # action/vel
+                buf["action_cam"].append(np.r_[d_cam, 0.0].astype(np.float32))
+                buf["action_base"].append(np.r_[d_base, 0.0].astype(np.float32))
+                buf["vel_cam"].append(v_cam)
+                buf["vel_base"].append(v_base)
+                # cmd 快照
+                snapshot_cmd(now_t)
+                # 条件与目标
+                buf["cond/target"].append(onehot)
+                buf["cond/phase"].append(phase_int(state.get("phase","idle")))
+                buf["target/cam_mm"].append(pos_cam.astype(np.float32))
+                buf["target/base_mm"].append(p_base.astype(np.float32))
+                buf["target/visible"].append(1 if visible else 0)
 
-        # 滚动
-        prev_coords = now_coords
-        prev_angles = now_angles
-        prev_T_be   = now_T_be
-        prev_T_bc   = now_T_bc
+        # 滚动上一帧
+        last["ts"] = now_t
+        last["coords"] = now_coords
+        last["angles"] = now_angles
+        last["T_be"]   = T_be
+        last["T_bc"]   = T_bc
+        last["jvel"]   = jvel.astype(np.float32)
+
         time.sleep(0.001)
 
-# ========= 夹爪（封装版） =========
-def _open_gripper(sp=80):
-    set_gripper_logged(0, sp)
-
-def _close_gripper(sp=80):
-    set_gripper_logged(1, sp)
-
-# ========= demo_grasp（使用封装命令） =========
-def _find_target_base_xyz(selected_id: int):
-    cam.update_frame()
-    frame = cam.color_frame()
-    corners, ids, _ = stag.detectMarkers(frame, FIND_TAG_DICT_ID)
-    if ids is None:
-        return None
-    ids = np.array(ids).flatten()
-    idxs = np.where(ids == selected_id)[0]
-    if len(idxs) == 0:
-        return None
-    idx = int(idxs[0])
-    one_corners = [corners[idx]]
-    one_ids = np.array([[selected_id]], dtype=np.int32)
-    target_cam = detector.calc_markers_base_position(one_corners, one_ids)
-    if target_cam is None or len(target_cam) < 3:
-        return None
-
-    end_coords = get_coords_mmdeg()
-    T_be = T_from_coords_mmdeg(end_coords)
-    p_cam  = np.array([target_cam[0], target_cam[1], target_cam[2], 1.0], dtype=float)
-    p_base = (T_be @ T_ee_cam @ p_cam).flatten()[:3]
-    return p_base, end_coords
-
-def goto_observe(speed=60):
-    try: mc.power_on()
-    except Exception: pass
-    time.sleep(0.3)
-    send_angles_logged(OBS_POSE, speed)
-    wait_stop(25.0)
-
-# ========= 线程启动 =========
-running = True
 thr = threading.Thread(target=writer_loop, daemon=True)
 thr.start()
 
-# ========= API =========
+# ========= 夹爪封装 =========
+def _open_gripper(sp=80):
+    try:
+        mc.set_gripper_state(0, sp)
+        state["gripper_closed"] = False
+    except Exception:
+        pass
 
+def _close_gripper(sp=80):
+    try:
+        mc.set_gripper_state(1, sp)
+        state["gripper_closed"] = True
+    except Exception:
+        pass
+
+def record_cmd_snapshot(cmd_type, speed=None, coords=None, angles=None, grip=None):
+    state["last_cmd"] = {
+        "type": cmd_type,           # 0/1/2/3
+        "speed": speed if speed is not None else np.nan,
+        "coords_mmdeg": coords if coords is not None else [np.nan]*6,
+        "angles_deg": angles if angles is not None else [np.nan]*6,
+        "gripper": grip if grip is not None else -1,
+        "time": time.monotonic(),
+    }
+
+# ========= API：健康/状态/相位 =========
 @app.get("/health")
 def api_health():
-    return jsonify(ok=True, **state)
+    return jsonify(ok=True, target_id=state["target_id"], phase=state["phase"],
+                   recording=state["recording"], locked=state["locked"])
 
 @app.get("/state")
 def api_state():
-    return jsonify(ok=True, target=state["target_id"], phase=state["phase"], recording=state["recording"])
+    # 简单状态给 PC viewer 用
+    return jsonify(ok=True, target=state.get("target_id"), phase=state.get("phase"),
+                   locked=state.get("locked"), gripper=int(state.get("gripper_closed", False)))
 
 @app.post("/bci/target")
 def api_target():
-    d = request.get_json(silent=True) or {}
-    if not d and request.form:
-        d = {"id": request.form.get("target", None), "phase": "selected"}
-    tid = d.get("id")
+    d = request.get_json(silent=True) or request.form
+    tid = d.get("id", None)
     ph  = d.get("phase", "selected")
     if tid is None:
-        return jsonify(ok=False, msg="need id or form 'target'"), 400
+        return jsonify(ok=False, msg="need id (A/B/C)"), 400
     state["target_id"] = tid
     state["phase"] = ph
+    if ph in ("idle","selected"):
+        state["locked"] = False
     return jsonify(ok=True, target=state["target_id"], phase=state["phase"])
 
+@app.post("/bci/phase")
+def api_phase():
+    d = request.get_json(silent=True) or request.form
+    ph = d.get("phase", None)
+    if ph is None:
+        return jsonify(ok=False, msg="need phase"), 400
+    state["phase"] = ph
+    if phase_int(ph) < 3:
+        state["locked"] = False
+    return jsonify(ok=True, phase=state["phase"], locked=state["locked"])
+
+# ========= 录制 =========
 @app.post("/record/start")
 def api_start():
     global h5file
-    fname = f"{H5_DIR}/epi_{int(time.time())}.hdf5"
     with lock:
-        for k in buf: buf[k].clear()
+        reset_buffers()
+        fname = f"{H5_DIR}/epi_{int(time.time())}.hdf5"
         h5file = h5py.File(fname, "w")
-        f = h5file
-        # 文件级元数据（统一 mm/deg）
-        f.attrs["target_id"]   = state["target_id"] or ""
-        f.attrs["st_pos_unit"] = "mm"
-        f.attrs["st_rot_unit"] = "deg"
-        f.attrs["ac_pos_unit"] = "mm"
-        f.attrs["ac_rot_unit"] = "deg"
-        f.attrs["T_ee_cam_mm"] = T_ee_cam.astype(np.float32)
-        f.attrs["success"]     = np.bool_(True)
-        f.attrs["collision"]   = np.bool_(False)
-        state["recording"] = True
-    return jsonify(ok=True, file=fname)
+        # 文件级属性（单位）
+        h5file.attrs["target_id"]   = (state["target_id"] or "").encode("utf-8")
+    # 单位标注（统一 mm/deg）
+    h5file.attrs["st_pos_unit"] = "mm"
+    h5file.attrs["st_rot_unit"] = "deg"
+    h5file.attrs["ac_pos_unit"] = "mm"
+    h5file.attrs["ac_rot_unit"] = "rad"   # rotvec Δ 的单位
+    h5file.attrs["T_ee_cam_mm"] = T_ee_cam.astype(np.float32)
+    h5file.attrs["GRASP_LOCK_OFFSET_MM"] = GRASP_LOCK_OFFSET_MM.astype(np.float32)
+    state["recording"] = True
+    state["locked"] = (phase_int(state["phase"]) >= 3) or state.get("gripper_closed", False)
+    return jsonify(ok=True, file=h5file.filename)
 
 @app.post("/record/stop")
 def api_stop():
-    """
-    停录后：写盘 → （默认）松爪 → 回观察位
-    可用 JSON 覆盖：{"release": false, "back_to_obs": false, "success": true, "collision": false}
-    """
+    """停止录制并写盘。可附带元标签 success/collision 与动作（松爪/回观察位）"""
     d = request.get_json(silent=True) or {}
-    do_release = d.get("release", True)
-    do_back    = d.get("back_to_obs", True)
-    success    = bool(d.get("success", True))
-    collision  = bool(d.get("collision", False))
+    do_release = bool(d.get("release", True))
+    do_back    = bool(d.get("back_to_obs", True))
+    success    = d.get("success", True)
+    collision  = d.get("collision", False)
 
     global h5file
     with lock:
         state["recording"] = False
         if h5file is None:
-            return jsonify(ok=False, msg="no open file"), 400
-
-        f = h5file
-        f.attrs["success"] = np.bool_(success)
-        f.attrs["collision"] = np.bool_(collision)
-        g = f.create_group("frames")
+            return jsonify(ok=False, msg="no open file")
+        g = h5file.create_group("frames")
 
         def save(name, arr, dtype=None):
             a = np.asarray(arr, dtype=dtype) if dtype else np.asarray(arr)
             g.create_dataset(name, data=a, compression="gzip")
 
         # 图像
-        save("images/rgb",  buf["rgb"],  np.uint8)
-        save("images/mask", buf["mask"], np.uint8)
-
-        # 末端状态/动作/速度
-        save("state",         buf["state"],        np.float32)     # [x,y,z,rx,ry,rz,g] (mm/deg)
-        save("action_cam",    buf["action_cam"],   np.float32)     # [dx,dy,dz,dα,dβ,dγ,dGrip]
-        save("action_base",   buf["action_base"],  np.float32)
-        save("vel_cam",       buf["vel_cam"],      np.float32)
-        save("vel_base",      buf["vel_base"],     np.float32)
-
-        # 关节
-        save("joints/angles_deg", buf["joints"],     np.float32)   # [N,6]
-        save("joints/vel_deg_s",  buf["joints_vel"], np.float32)   # [N,6]
-
-        # 位姿矩阵
-        save("poses/T_be_mm", buf["T_be"], np.float32)             # [N,4,4]
-        save("poses/T_bc_mm", buf["T_bc"], np.float32)
-
-        # 目标
-        save("target/cam_mm",   buf["target_cam"],  np.float32)    # [N,3]
-        save("target/base_mm",  buf["target_base"], np.float32)    # [N,3]
-        save("target/visible",  buf["target_vis"],  np.int32)
-
-        # 条件
-        save("cond/target", buf["cond_target"], np.float32)
-        save("cond/phase",  buf["cond_phase"],  np.int32)
+        save("images/rgb",  buf["images/rgb"],  np.uint8)
+        save("images/mask", buf["images/mask"], np.uint8)
 
         # 时间
-        save("time/ts", buf["ts"], np.float64)
-        save("time/dt", buf["dt"], np.float64)
+        save("time/ts", np.asarray(buf["time/ts"], dtype=np.float64))
+        save("time/dt", np.asarray(buf["time/dt"], dtype=np.float64))
 
-        # 真实命令
-        save("cmd/type",        buf["cmd_type"],   np.int32)
-        save("cmd/speed",       buf["cmd_speed"],  np.float32)
-        save("cmd/coords_mmdeg",buf["cmd_coords"], np.float32)
-        save("cmd/angles_deg",  buf["cmd_angles"], np.float32)
-        save("cmd/gripper",     buf["cmd_gripper"],np.int32)
-        save("cmd/time",        buf["cmd_time"],   np.float64)
+        # 末端低维
+        save("state", np.asarray(buf["state"], dtype=np.float32))
+
+        # joints/poses
+        save("joints/angles_deg", np.asarray(buf["joints/angles_deg"], dtype=np.float32))
+        save("joints/vel_deg_s",  np.asarray(buf["joints/vel_deg_s"], dtype=np.float32))
+        save("poses/T_be_mm",     np.asarray(buf["poses/T_be_mm"], dtype=np.float32))
+        save("poses/T_bc_mm",     np.asarray(buf["poses/T_bc_mm"], dtype=np.float32))
+
+        # action/vel
+        save("action_cam", np.asarray(buf["action_cam"], dtype=np.float32))
+        save("action_base",np.asarray(buf["action_base"], dtype=np.float32))
+        save("vel_cam",    np.asarray(buf["vel_cam"], dtype=np.float32))
+        save("vel_base",   np.asarray(buf["vel_base"], dtype=np.float32))
+
+        # cmd/*
+        save("cmd/type",   np.asarray(buf["cmd/type"], dtype=np.int32))
+        save("cmd/speed",  np.asarray(buf["cmd/speed"], dtype=np.float32))
+        save("cmd/coords_mmdeg", np.asarray(buf["cmd/coords_mmdeg"], dtype=np.float32))
+        save("cmd/angles_deg",   np.asarray(buf["cmd/angles_deg"], dtype=np.float32))
+        save("cmd/gripper", np.asarray(buf["cmd/gripper"], dtype=np.int32))
+        save("cmd/time",    np.asarray(buf["cmd/time"], dtype=np.float64))
+
+        # 条件/目标
+        save("cond/target", np.asarray(buf["cond/target"], dtype=np.float32))
+        save("cond/phase",  np.asarray(buf["cond/phase"], dtype=np.int32))
+        save("target/cam_mm",   np.asarray(buf["target/cam_mm"], dtype=np.float32))
+        save("target/base_mm",  np.asarray(buf["target/base_mm"], dtype=np.float32))
+        save("target/visible",  np.asarray(buf["target/visible"], dtype=np.uint8))
+
+        # 文件级元标签
+        h5file.attrs["success"]   = bool(success)
+        h5file.attrs["collision"] = bool(collision)
 
         path = h5file.filename
         h5file.close(); h5file = None
 
+    # 后处理动作
     if do_release:
-        _open_gripper(sp=80)
-        time.sleep(0.4)
+        _open_gripper(sp=80); time.sleep(0.3)
     if do_back:
         goto_observe(speed=60)
 
-    return jsonify(ok=True, file=path, released=do_release, back_to_obs=do_back)
+    return jsonify(ok=True, file=path, released=do_release, back_to_obs=do_back,
+                   success=bool(success), collision=bool(collision))
 
 @app.post("/goto_obs")
 def api_goto_obs():
@@ -519,42 +511,89 @@ def api_goto_obs():
     goto_observe(sp)
     return jsonify(ok=True, pose=OBS_POSE)
 
-# ========= 命令接口（可选，便于测试） =========
+# ========= 命令端点（务必使用这些端点才能记录到 cmd/*） =========
 @app.post("/cmd/coords")
 def api_cmd_coords():
-    d = request.get_json(silent=True) or {}
-    coords = d.get("coords", None)   # [x,y,z,rx,ry,rz] (mm/deg)
-    sp = float(d.get("speed", 30))
-    if not coords or len(coords) != 6:
-        return jsonify(ok=False, msg="need coords[6]"), 400
-    send_coords_logged(coords, sp)
+    d = request.get_json(silent=True) or request.form
+    try:
+        x = float(d.get("x")); y=float(d.get("y")); z=float(d.get("z"))
+        rx=float(d.get("rx")); ry=float(d.get("ry")); rz=float(d.get("rz"))
+        sp = int(d.get("speed", 30))
+    except Exception:
+        return jsonify(ok=False, msg="need x,y,z,rx,ry,rz"), 400
+    coords = [x,y,z,rx,ry,rz]
+    record_cmd_snapshot(1, speed=sp, coords=coords)
+    try:
+        mc.power_on(); time.sleep(0.2)
+        mc.send_coords(coords, sp)
+    except Exception as e:
+        return jsonify(ok=False, msg=str(e)), 500
     return jsonify(ok=True)
 
 @app.post("/cmd/angles")
 def api_cmd_angles():
-    d = request.get_json(silent=True) or {}
-    angles = d.get("angles", None)   # [j1..j6] deg
-    sp = float(d.get("speed", 30))
-    if not angles or len(angles) != 6:
-        return jsonify(ok=False, msg="need angles[6]"), 400
-    send_angles_logged(angles, sp)
+    d = request.get_json(silent=True) or request.form
+    try:
+        j = [float(d.get(f"j{k+1}")) for k in range(6)]
+        sp = int(d.get("speed", 30))
+    except Exception:
+        return jsonify(ok=False, msg="need j1..j6"), 400
+    record_cmd_snapshot(2, speed=sp, angles=j)
+    try:
+        mc.power_on(); time.sleep(0.2)
+        mc.send_angles(j, sp)
+    except Exception as e:
+        return jsonify(ok=False, msg=str(e)), 500
     return jsonify(ok=True)
 
 @app.post("/cmd/gripper")
 def api_cmd_gripper():
-    d = request.get_json(silent=True) or {}
-    mode = int(d.get("mode", 1))     # 0=open, 1=close
-    sp = float(d.get("speed", 80))
-    set_gripper_logged(mode, sp)
-    return jsonify(ok=True)
+    d = request.get_json(silent=True) or request.form
+    try:
+        st = int(d.get("state"))  # 0 open / 1 close
+        sp = int(d.get("speed", 80))
+    except Exception:
+        return jsonify(ok=False, msg="need state 0|1"), 400
+    record_cmd_snapshot(3, speed=sp, grip=st)
+    try:
+        if st == 1:
+            _close_gripper(sp)
+        else:
+            _open_gripper(sp)
+    except Exception as e:
+        return jsonify(ok=False, msg=str(e)), 500
+    return jsonify(ok=True, gripper=st)
 
-# ========= 抓取演示（会自动记录 cmd/*） =========
+# ========= demo_grasp（示例 IK 抓取：只做抓，不放回） =========
+GRIPPER_Z_OFFSET = 100
+APPROACH_BUFFER  = 20
+Z_OFFSET         = 30
+LIFT_AFTER_GRASP = 60
+
+def _find_target_base_xyz(selected_id: int):
+    cam.update_frame()
+    frame = cam.color_frame()
+    corners, ids, _ = stag.detectMarkers(frame, 11)
+    if ids is None: return None
+    ids = np.array(ids).flatten()
+    idxs = np.where(ids == selected_id)[0]
+    if len(idxs) == 0: return None
+    idx = int(idxs[0])
+    one_corners = [corners[idx]]
+    one_ids = np.array([[selected_id]], dtype=np.int32)
+    target_cam = detector.calc_markers_base_position(one_corners, one_ids)
+    if target_cam is None or len(target_cam) < 3: return None
+
+    end_coords = get_coords_blocking()
+    T_be = trans_from_coords_mmdeg(end_coords)
+    p_cam  = np.array([target_cam[0], target_cam[1], target_cam[2], 1.0], dtype=float)
+    p_base = (T_be @ T_ee_cam @ p_cam).flatten()[:3]
+    return p_base, end_coords
+
 @app.post("/demo_grasp")
 def api_demo_grasp():
     d = request.get_json(silent=True) or {}
     sp = int(d.get("speed", 30))
-
-    # 解析目标 id
     tid_code = state.get("target_id")
     if isinstance(tid_code, str):
         tid = TARGET_ID_MAP.get(tid_code.upper(), None)
@@ -569,75 +608,72 @@ def api_demo_grasp():
     xyz_base, end_coords = found
     rx, ry, rz = end_coords[3:6]
 
-    grasp = [float(xyz_base[0]),
-             float(xyz_base[1]),
-             float(xyz_base[2] + GRIPPER_Z_OFFSET),
-             float(rx), float(ry), float(rz)]
-    above = grasp.copy();    above[2]    += Z_OFFSET
-    approach = grasp.copy(); approach[2] += APPROACH_BUFFER
-    lift = grasp.copy();     lift[2]     += LIFT_AFTER_GRASP
+    grasp    = [float(xyz_base[0]), float(xyz_base[1]), float(xyz_base[2] + GRIPPER_Z_OFFSET), float(rx), float(ry), float(rz)]
+    above    = grasp.copy();    above[2]    += Z_OFFSET
+    approach = grasp.copy();    approach[2] += APPROACH_BUFFER
+    lift     = grasp.copy();    lift[2]     += LIFT_AFTER_GRASP
 
     detector.coord_limit(grasp); detector.coord_limit(above)
     detector.coord_limit(approach); detector.coord_limit(lift)
 
     try:
-        mc.power_on(); time.sleep(0.3)
-        _open_gripper()
-        send_coords_logged(above,    sp); time.sleep(2)
-        send_coords_logged(approach, sp); time.sleep(2)
-        send_coords_logged(grasp,    max(15, sp//2)); time.sleep(2)
-        _close_gripper()
-        send_coords_logged(lift,     sp); time.sleep(2)
-        # 你也可以在这里把 state['phase'] 设为 confirmed
+        mc.power_on(); time.sleep(0.2)
+        # 打开夹爪
+        record_cmd_snapshot(3, speed=80, grip=0); _open_gripper(80)
+        # 上到 above
+        record_cmd_snapshot(1, speed=sp, coords=above);    mc.send_coords(above, sp);    time.sleep(2)
+        # 到 approach
+        record_cmd_snapshot(1, speed=sp, coords=approach); mc.send_coords(approach, sp); time.sleep(2)
+        # 下到 grasp
+        record_cmd_snapshot(1, speed=max(15, sp//2), coords=grasp); mc.send_coords(grasp, max(15, sp//2)); time.sleep(2)
+        # 闭合夹爪
+        record_cmd_snapshot(3, speed=80, grip=1); _close_gripper(80)
+        # 抬升
+        record_cmd_snapshot(1, speed=sp, coords=lift);     mc.send_coords(lift, sp);     time.sleep(2)
+        # 标记阶段：已抓取
         state["phase"] = "confirmed"
+        state["locked"] = True
         return jsonify(ok=True)
     except Exception as e:
         return jsonify(ok=False, msg=str(e)), 500
 
-# ========= 预览：PC 端 obs_viewer 用 =========
+# ========= 预览（给 PC 端 obs_viewer.py 使用） =========
 @app.get("/obs_npz")
 def api_obs_npz():
-    """
-    返回一个 npz：rgba(HxWx4)、coords(mm/deg)
-    """
-    size = int(request.args.get("size", 384))
-    tg   = request.args.get("target", "")
     try:
-        cam.update_frame()
-        frame = cam.color_frame()
-        if frame is None:
-            raise RuntimeError("no frame")
-        coords = get_coords_mmdeg()
-        mask = detect_mask_bgr(frame, tg or state.get("target_id"))
-        rgb = frame[..., ::-1]  # BGR->RGB
-
-        if size > 0:
-            H, W = rgb.shape[:2]
-            scale = size / max(H, W)
-            nh, nw = int(H*scale), int(W*scale)
-            rgb = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_AREA)
-            mask = cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
-
-        rgba = np.dstack([rgb, mask]).astype(np.uint8)
-        bio = io.BytesIO()
-        np.savez_compressed(bio, rgba=rgba, coords=coords.astype(np.float32))
-        bio.seek(0)
-        return send_file(bio, mimetype="application/octet-stream",
-                         as_attachment=False, download_name="obs.npz")
+        size = int(request.args.get("size", 256))
+        tg   = request.args.get("target", "") or ""
     except Exception:
-        rgba = np.zeros((size, size, 4), np.uint8)
-        bio = io.BytesIO()
-        np.savez_compressed(bio, rgba=rgba, coords=np.zeros(6, np.float32))
-        bio.seek(0)
-        return send_file(bio, mimetype="application/octet-stream",
-                         as_attachment=False, download_name="obs.npz")
+        size = 256; tg = ""
+    cam.update_frame()
+    frame = cam.color_frame()
+    if frame is None:
+        # 返回空
+        pack = io.BytesIO()
+        np.savez_compressed(pack, rgba=np.zeros((size,size,4), np.uint8), coords=np.zeros(6,np.float32))
+        pack.seek(0)
+        return Response(pack.getvalue(), mimetype="application/octet-stream")
 
-# ========= 启动 =========
+    if tg not in ("A","B","C"): tg = state.get("target_id") or ""
+    mask = stag_mask(frame, tg if tg else None)
+    rgb  = frame[..., ::-1]
+    H, W = rgb.shape[:2]
+    if H != size or W != size:
+        # 等比最小边缩放到 size
+        scale = size / max(H, W)
+        nh, nw = int(H * scale), int(W * scale)
+        rgb = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_AREA)
+        mask = cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
+        pad_h, pad_w = size - nh, size - nw
+        rgb  = cv2.copyMakeBorder(rgb, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=0)
+        mask = cv2.copyMakeBorder(mask, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=0)
+    rgba = np.dstack([rgb, mask]).astype(np.uint8)
+    coords = np.array(get_coords_blocking(), dtype=np.float32)
+    pack = io.BytesIO()
+    np.savez_compressed(pack, rgba=rgba, coords=coords)
+    pack.seek(0)
+    return Response(pack.getvalue(), mimetype="application/octet-stream")
+
+# ========= 主程序 =========
 if __name__ == "__main__":
-    # 上电后回到观测位（记录 cmd/*）
-    try: mc.power_on()
-    except Exception: pass
-    time.sleep(0.3)
-    send_angles_logged(OBS_POSE, 60)
-    wait_stop(25.0)
     app.run(host="0.0.0.0", port=PORT, threaded=True)
