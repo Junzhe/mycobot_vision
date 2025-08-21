@@ -17,9 +17,8 @@ H5_DIR = str(DATA_DIR)
 PORT = 5055
 TARGET_ID_MAP = {"A": 0, "B": 1, "C": 2}
 
-# 观察位（关节角，deg）
-OBS_POSE_BASE = [-90, 5, -45, -40, 90, 60]   # j5 的 -90 偏置视固件而定，见下 offset_j5
-# 夹爪中心相对法兰（末端坐标系）的偏移（mm）：默认沿 -Z 100 mm
+# 观察位
+OBS_POSE_BASE = [-90, 5, -45, -40, 90, 50]   
 GRASP_LOCK_OFFSET_MM = np.array([0.0, 0.0, -100.0], dtype=np.float32)
 
 # 末端-相机外参存放路径
