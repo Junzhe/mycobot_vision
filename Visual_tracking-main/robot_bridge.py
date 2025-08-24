@@ -1,5 +1,4 @@
-# 5066robot_bridge.py — Pi 端：接收 HTTP 命令并驱动机械臂
-import time, io, numpy as np, cv2, stag
+import time, io, json, numpy as np, cv2, stag
 from flask import Flask, request, jsonify, Response
 from pymycobot import MyCobot280, PI_PORT, PI_BAUD
 from camera_detect import camera_detect
@@ -11,10 +10,11 @@ app = Flask(__name__)
 current_target = None
 
 print("[INFO] init robot & camera ...")
-mc = MyCobot280(PI_PORT, PI_BAUD); time.sleep(1.0)
+mc = MyCobot280(PI_PORT, PI_BAUD)
+time.sleep(1.0)
 try:
-    mc.power_on(); time.sleep(0.3)
-    mc.send_angles([-90, 5, -45, -40, 0, 60], 40); time.sleep(2.0)
+    mc.send_angles([-90, 5, -45, -40, 0, 60], 40)
+    time.sleep(2.0)
 except Exception:
     pass
 
@@ -33,16 +33,20 @@ def stag_mask(frame_bgr, target_code):
     if tid is None: return np.zeros(frame_bgr.shape[:2], np.uint8)
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = stag.detectMarkers(gray, 11)
-    H,W = gray.shape; mask = np.zeros((H,W), np.uint8)
+    H,W = gray.shape
+    mask = np.zeros((H,W), np.uint8)
     if ids is not None:
         for c,i in zip(corners, ids):
             if int(np.array(i).flatten()[0]) == tid:
                 poly = np.asarray(c).reshape(-1,2).astype(np.int32)
-                cv2.fillConvexPoly(mask, poly, 255); break
+                cv2.fillConvexPoly(mask, poly, 255)
+                break
     return mask
 
 @app.get("/health")
-def api_health(): return jsonify(ok=True)
+def api_health():
+    c = mc.get_coords()
+    return jsonify(ok=True, target=(current_target or ""), coords=c)
 
 @app.post("/bci/target")
 def api_bci_target():
@@ -54,7 +58,8 @@ def api_bci_target():
     return jsonify(ok=True, target=current_target)
 
 @app.get("/state")
-def api_state(): return jsonify(ok=True, target=(current_target or ""))
+def api_state():
+    return jsonify(ok=True, target=(current_target or ""))
 
 @app.get("/eih")
 def api_eih():
@@ -63,7 +68,7 @@ def api_eih():
 @app.get("/coords")
 def api_coords():
     c = mc.get_coords()
-    while (c is None) or (len(c) < 6):
+    while (c is None) or (len(c)<6):
         time.sleep(0.01); c = mc.get_coords()
     return jsonify(ok=True, coords=c)
 
@@ -72,14 +77,17 @@ def api_send_coords():
     d = request.get_json(force=True)
     coords = d.get("coords", None)
     speed  = int(d.get("speed", 30))
-    if (coords is None) or (len(coords) < 6):
+    if (coords is None) or (len(coords)<6):
         return jsonify(ok=False, msg="need coords[6]"), 400
-    det.coord_limit(coords)
+    # 夹紧 + z保底
+    coords = list(map(float, coords))
+    coords[0] = max(-350.0, min(350.0, coords[0]))
+    coords[1] = max(-350.0, min(350.0, coords[1]))
+    coords[2] = max(60.0,   coords[2])       # 底面安全
     try:
-        mc.power_on(); time.sleep(0.2)
+        det.coord_limit(coords)               # 你已有的边界函数
     except Exception:
         pass
-    print("[MOVE] ->", [round(v,2) for v in coords[:6]], " sp=", speed)
     try:
         mc.send_coords(coords, speed)
         return jsonify(ok=True)
@@ -91,12 +99,7 @@ def api_gripper():
     d = request.get_json(force=True)
     open_ = d.get("open", True)
     spd   = int(d.get("speed", 80))
-    try:
-        mc.power_on(); time.sleep(0.2)
-    except Exception:
-        pass
     mc.set_gripper_state(0 if open_ else 1, spd)
-    print("[GRIP]", "open" if open_ else "close", " sp=", spd)
     return jsonify(ok=True)
 
 @app.get("/frame.jpg")
@@ -108,22 +111,23 @@ def api_frame():
 @app.get("/mask.png")
 def api_mask():
     target = request.args.get("target", None) or current_target
-    f = latest_frame(); m = stag_mask(f, target)
+    f = latest_frame()
+    m = stag_mask(f, target)
     ok, buf = cv2.imencode(".png", m)
     return Response(buf.tobytes(), mimetype="image/png")
 
 @app.get("/obs_npz")
 def api_obs_npz():
     target = (request.args.get("target") or (current_target or "")).upper()
-    try: size = int(request.args.get("size", 128))
-    except Exception: size = 128
+    size   = int(request.args.get("size", 128))
     f = latest_frame()
     m = stag_mask(f, target)
-    rgb = cv2.resize(f[..., ::-1], (size,size), cv2.INTER_AREA)   # BGR->RGB
+    rgb = cv2.resize(f[..., ::-1], (size,size), cv2.INTER_AREA)
     m   = cv2.resize(m, (size,size), cv2.INTER_NEAREST)
     rgba = np.dstack([rgb.astype(np.uint8), m.astype(np.uint8)])
-    c = mc.get_coords() or [-90,5,-45,-40,0,60]
-    bio = io.BytesIO(); np.savez_compressed(bio, rgba=rgba, coords=np.array(c, np.float32))
+    c = mc.get_coords()
+    bio = io.BytesIO()
+    np.savez_compressed(bio, rgba=rgba, coords=np.array(c, np.float32))
     bio.seek(0)
     return Response(bio.read(), mimetype="application/octet-stream")
 
