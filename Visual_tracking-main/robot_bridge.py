@@ -1,3 +1,4 @@
+# 5066robot_bridge.py — Pi 端：接收 HTTP 命令并驱动机械臂
 import time, io, json, numpy as np, cv2, stag
 from flask import Flask, request, jsonify, Response
 from pymycobot import MyCobot280, PI_PORT, PI_BAUD
@@ -7,13 +8,21 @@ PORT = 5066
 TARGET_ID_MAP = {"A":0,"B":1,"C":2}
 
 app = Flask(__name__)
-current_target = None   
+current_target = None
 
 print("[INFO] init robot & camera ...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
-time.sleep(1)
-mc.send_angles([-90, 5, -45, -40, 0, 60], 40); time.sleep(2)
+time.sleep(1.0)
 
+# 可选：起始角度到观察位（你现有的角度）
+try:
+    mc.power_on(); time.sleep(0.3)
+    mc.send_angles([-90, 5, -45, -40, 0, 60], 40)
+    time.sleep(2)
+except Exception:
+    pass
+
+# 摄像头与手眼外参
 cam_params = np.load("camera_params.npz")
 mtx, dist = cam_params["mtx"], cam_params["dist"]
 det = camera_detect(0, 40, mtx, dist)
@@ -40,19 +49,22 @@ def stag_mask(frame_bgr, target_code):
     return mask
 
 @app.get("/health")
-def api_health(): return jsonify(ok=True)
+def api_health():
+    return jsonify(ok=True)
 
 @app.post("/bci/target")
 def api_bci_target():
     global current_target
     d = request.get_json(silent=True) or {}
     tg = (d.get("id") or d.get("target") or "").upper()
-    if tg not in TARGET_ID_MAP: return jsonify(ok=False, msg="bad target"), 400
+    if tg not in TARGET_ID_MAP:
+        return jsonify(ok=False, msg="bad target"), 400
     current_target = tg
     return jsonify(ok=True, target=current_target)
 
 @app.get("/state")
-def api_state(): return jsonify(ok=True, target=(current_target or ""))
+def api_state():
+    return jsonify(ok=True, target=(current_target or ""))
 
 @app.get("/eih")
 def api_eih():
@@ -61,8 +73,9 @@ def api_eih():
 @app.get("/coords")
 def api_coords():
     c = mc.get_coords()
-    while (c is None) or (len(c)<6):
-        time.sleep(0.01); c = mc.get_coords()
+    while (c is None) or (len(c) < 6):
+        time.sleep(0.01)
+        c = mc.get_coords()
     return jsonify(ok=True, coords=c)
 
 @app.post("/send_coords")
@@ -70,18 +83,32 @@ def api_send_coords():
     d = request.get_json(force=True)
     coords = d.get("coords", None)
     speed  = int(d.get("speed", 30))
-    if (coords is None) or (len(coords)<6):
+    if (coords is None) or (len(coords) < 6):
         return jsonify(ok=False, msg="need coords[6]"), 400
+    # 安全限幅（基于你的 camera_detect）
     det.coord_limit(coords)
-    mc.send_coords(coords, speed)
-    return jsonify(ok=True)
+    try:
+        mc.power_on(); time.sleep(0.3)                # ★ 确保有力矩
+    except Exception:
+        pass
+    print("[MOVE] ->", [round(c,2) for c in coords[:6]], " sp=", speed)  # ★ 打印一下
+    try:
+        mc.send_coords(coords, speed)
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(ok=False, msg=str(e)), 500
 
 @app.post("/gripper")
 def api_gripper():
     d = request.get_json(force=True)
     open_ = d.get("open", True)
     spd   = int(d.get("speed", 80))
+    try:
+        mc.power_on(); time.sleep(0.2)
+    except Exception:
+        pass
     mc.set_gripper_state(0 if open_ else 1, spd)
+    print("[GRIP]", "open" if open_ else "close", " sp=", spd)
     return jsonify(ok=True)
 
 # 调试可用：当前帧/掩码
@@ -99,18 +126,23 @@ def api_mask():
     ok, buf = cv2.imencode(".png", m)
     return Response(buf.tobytes(), mimetype="image/png")
 
-# 高效观测打包：RGB(128) + Mask + 末端位姿（一次取完）
+# 观测打包：RGB(指定 size) + mask + 末端坐标
 @app.get("/obs_npz")
 def api_obs_npz():
     target = (request.args.get("target") or (current_target or "")).upper()
-    size   = int(request.args.get("size", 128))
-    f = latest_frame()                            # BGR
+    try:
+        size = int(request.args.get("size", 128))
+    except Exception:
+        size = 128
+    f = latest_frame()                               # BGR
     m = stag_mask(f, target)
     rgb = cv2.resize(f[..., ::-1], (size,size), cv2.INTER_AREA)   # -> RGB
     m   = cv2.resize(m, (size,size), cv2.INTER_NEAREST)
     rgba = np.dstack([rgb.astype(np.uint8), m.astype(np.uint8)])  # HxWx4
 
-    c = mc.get_coords()                           # mm/deg
+    c = mc.get_coords()                              # mm/deg
+    if (c is None) or (len(c) < 6):
+        c = [-90, 5, -45, -40, 0, 60]
     bio = io.BytesIO()
     np.savez_compressed(bio, rgba=rgba, coords=np.array(c, np.float32))
     bio.seek(0)
