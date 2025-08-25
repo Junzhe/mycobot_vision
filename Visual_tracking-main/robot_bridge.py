@@ -20,7 +20,7 @@ except Exception:
 
 cam_params = np.load("camera_params.npz")
 mtx, dist = cam_params["mtx"], cam_params["dist"]
-det = camera_detect(0, 40, mtx, dist)
+det = camera_detect(0, 25, mtx, dist)
 assert det.EyesInHand_matrix is not None, "EyesInHand_matrix.json 未找到，请先手眼标定"
 camera = det.camera
 
