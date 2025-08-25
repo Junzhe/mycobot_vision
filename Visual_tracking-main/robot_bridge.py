@@ -1,4 +1,4 @@
-import time, io, json, numpy as np, cv2, stag
+import time, io, json, numpy as np, cv2, stag 
 from flask import Flask, request, jsonify, Response
 from pymycobot import MyCobot280, PI_PORT, PI_BAUD
 from camera_detect import camera_detect
@@ -11,12 +11,38 @@ current_target = None
 
 print("[INFO] init robot & camera ...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
-time.sleep(1.0)
-try:
-    mc.send_angles([-90, 5, -45, -40, 90, 50], 60)
-    time.sleep(2.0)
-except Exception:
-    pass
+time.sleep(0.5)
+
+# === 新增：等待停止与到观察位 ===
+def wait_stop(timeout=25.0, poll=0.05):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            # 某些固件上 is_moving 可能短暂返回异常，做容错
+            if mc.is_moving() == 0:
+                return True
+        except Exception:
+            pass
+        time.sleep(poll)
+    return False
+
+def goto_observe(angles, speed=40):
+    """统一为：上电 -> 下发 -> 等待停止"""
+    try:
+        mc.power_on()
+    except Exception:
+        # 上电失败也不影响后续发送，但会导致电机不动；保留容错
+        pass
+    time.sleep(0.2)
+    mc.send_angles(angles, speed)
+    ok = wait_stop(timeout=25.0)
+    if not ok:
+        # 兜底等待，避免刚开机首次运动时间不稳定
+        time.sleep(1.0)
+
+# === 启动即回到观察位（与程序B一致的“上电+等待”流程） ===
+OBS_ANGLES = [-90, 5, -45, -40, 90, 50]   # 保持与原程序A一致
+goto_observe(OBS_ANGLES, speed=40)
 
 cam_params = np.load("camera_params.npz")
 mtx, dist = cam_params["mtx"], cam_params["dist"]
