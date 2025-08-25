@@ -13,7 +13,7 @@ print("[INFO] init robot & camera ...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 time.sleep(1.0)
 try:
-    mc.send_angles([-90, 5, -45, -40, 90, 50], 40)
+    mc.send_angles([-90, 5, -45, -40, 90, 50], 60)
     time.sleep(2.0)
 except Exception:
     pass
