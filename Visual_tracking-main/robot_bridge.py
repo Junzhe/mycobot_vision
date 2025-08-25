@@ -41,7 +41,7 @@ def goto_observe(angles, speed=40):
         time.sleep(1.0)
 
 # === 启动即回到观察位（与程序B一致的“上电+等待”流程） ===
-OBS_ANGLES = [-90, 5, -45, -40, 90, 50]   # 保持与原程序A一致
+OBS_ANGLES = [-90, 5, -45, -40, 0, 40]   # 保持与原程序A一致
 goto_observe(OBS_ANGLES, speed=40)
 
 cam_params = np.load("camera_params.npz")
