@@ -21,7 +21,7 @@ mc = MyCobot280(PI_PORT, PI_BAUD)
 offset_j5 = -90 if mc.get_system_version() > 2 else 0
 
 # 观察位（与你初始化用的姿态一致；后面抓完回这里）
-OBS_POSE = [-90, 5, -104, 14, 90 + offset_j5, 60]
+OBS_POSE = [-90, 5, -45, -40, 90, 50, 60]
 
 def goto_observe(speed=40):
     """回观察位（安全返回）"""
