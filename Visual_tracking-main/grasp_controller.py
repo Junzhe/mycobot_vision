@@ -20,7 +20,7 @@ print("[INFO] 初始化机械臂与相机...")
 mc = MyCobot280(PI_PORT, PI_BAUD)
 offset_j5 = -90 if mc.get_system_version() > 2 else 0
 
-OBS_POSE = [-90, 5, -45, -40, 90 + offset_j5, 50]
+OBS_POSE = [-90, 5, -35, -40, 90 + offset_j5, 50]
 
 def goto_observe(speed=40):
     try:
