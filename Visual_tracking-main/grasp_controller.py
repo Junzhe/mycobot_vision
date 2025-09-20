@@ -14,9 +14,6 @@ Z_OFFSET           = 45
 LIFT_AFTER_GRASP   = 100
 RETURN_LIFT        = 40
 
-# （可选）抓取完成后的冷却时间，用于吸收AR端可能的抖动重试；不需要可设为 0.0
-COOLDOWN_SEC = 0.5
-
 # === 初始化 ===
 app = Flask(__name__)
 print("[INFO] 初始化机械臂与相机...")
@@ -40,9 +37,8 @@ mtx, dist = camera_params["mtx"], camera_params["dist"]
 detector = camera_detect(0, 25, mtx, dist)
 
 # === 状态互斥 ===
-IS_BUSY = False                 # 保留变量（仅用于日志/状态），核心互斥由 BUSY_LOCK 保证
+IS_BUSY = False
 BUSY_LOCK = threading.Lock()
-_last_done_ts = 0.0            # 冷却时间计时
 
 # === 夹爪控制 ===
 def open_gripper():
@@ -53,7 +49,7 @@ def close_gripper():
     mc.set_gripper_state(1, 80)
     time.sleep(1.5)
 
-# === 抓取逻辑（保持不变） ===
+# === 抓取逻辑 ===
 def grasp_from_target_code(target_code: str):
     target_id = TARGET_ID_MAP.get(target_code.upper(), None)
     if target_id is None:
@@ -79,21 +75,30 @@ def grasp_from_target_code(target_code: str):
     grasp_coords = [xyz_base[0], xyz_base[1], xyz_base[2] + GRIPPER_Z_OFFSET, rx, ry, rz]
     detector.coord_limit(grasp_coords)
 
-    above = grasp_coords.copy(); above[2] += Z_OFFSET; detector.coord_limit(above)
-    approach = grasp_coords.copy(); approach[2] += APPROACH_BUFFER; detector.coord_limit(approach)
+    above = grasp_coords.copy()
+    above[2] += Z_OFFSET
+    detector.coord_limit(above)
+
+    approach = grasp_coords.copy()
+    approach[2] += APPROACH_BUFFER
+    detector.coord_limit(approach)
 
     try:
         open_gripper()
-        mc.send_coords(above, 30); time.sleep(1.6)
+        mc.send_coords(above, 30);    time.sleep(1.6)
         mc.send_coords(approach, 20); time.sleep(1.6)
         mc.send_coords(grasp_coords, 12); time.sleep(1.6)
         close_gripper()
 
-        lift = grasp_coords.copy(); lift[2] += LIFT_AFTER_GRASP; detector.coord_limit(lift)
-        mc.send_coords(lift, 30); time.sleep(1.6)
+        lift = grasp_coords.copy()
+        lift[2] += LIFT_AFTER_GRASP
+        detector.coord_limit(lift)
+        mc.send_coords(lift, 30);     time.sleep(1.6)
 
         if RETURN_LIFT > 0:
-            lift_more = lift.copy(); lift_more[2] += RETURN_LIFT; detector.coord_limit(lift_more)
+            lift_more = lift.copy()
+            lift_more[2] += RETURN_LIFT
+            detector.coord_limit(lift_more)
             mc.send_coords(lift_more, 30); time.sleep(1.2)
 
         open_gripper(); time.sleep(0.8)
@@ -103,46 +108,36 @@ def grasp_from_target_code(target_code: str):
 
     except Exception as e:
         print(f"[ERROR] 抓取流程异常：{e}")
-        try: goto_observe(speed=30)
-        except: pass
+        try:
+            goto_observe(speed=30)
+        except:
+            pass
         return False
 
-# === HTTP 路由（修复：非阻塞互斥 + 冷却；其余保持不变） ===
+# === HTTP 路由 ===
 @app.route("/target", methods=["POST"])
 def handle_target():
-    global IS_BUSY, _last_done_ts
+    global IS_BUSY
+    target = (request.form.get("target") or "").strip().upper()
+    print(f"📥 接收到目标编号：{target}")
 
-    # 冷却期：抓取完成后短时间内直接拒绝，吸收重复点击/重试
-    now = time.time()
-    if COOLDOWN_SEC > 0 and (now - _last_done_ts) < COOLDOWN_SEC:
-        remaining = COOLDOWN_SEC - (now - _last_done_ts)
-        print(f"[INFO] 冷却中（{remaining:.2f}s），拒绝请求")
+    if IS_BUSY:
+        print("[WARN] 忙碌中，拒绝请求")
         return "BUSY", 409
 
-    # 非阻塞尝试获取锁：拿不到表示抓取进行中，直接返回 BUSY（不会排队/插队/打断）
-    if not BUSY_LOCK.acquire(blocking=False):
-        print("[WARN] 忙碌中（抓取进行中），拒绝请求")
-        return "BUSY", 409
-
-    try:
-        target = (request.form.get("target") or "").strip().upper()
-        print(f"📥 接收到目标编号：{target}")
-
-        if not target:
-            return "BAD_REQUEST: missing target", 400
-
+    with BUSY_LOCK:
         IS_BUSY = True
-        success = grasp_from_target_code(target)
-        _last_done_ts = time.time()
-        return ("OK", 200) if success else ("FAIL", 500)
-
-    except Exception as e:
-        print(f"[ERROR] 处理异常：{e}")
-        return "ERROR", 500
-
-    finally:
-        IS_BUSY = False
-        BUSY_LOCK.release()
+        try:
+            success = grasp_from_target_code(target)
+            if success:
+                return "OK", 200
+            else:
+                return "FAIL", 500
+        except Exception as e:
+            print(f"[ERROR] 处理异常：{e}")
+            return "ERROR", 500
+        finally:
+            IS_BUSY = False
 
 # === 启动服务 ===
 if __name__ == "__main__":
