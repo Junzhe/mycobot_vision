@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request 
 from pymycobot import MyCobot280, PI_PORT, PI_BAUD
 from camera_detect import camera_detect
 import numpy as np
@@ -13,6 +13,10 @@ APPROACH_BUFFER    = 25
 Z_OFFSET           = 45
 LIFT_AFTER_GRASP   = 100
 RETURN_LIFT        = 40
+
+# 多帧平均配置
+AVG_FRAMES = 5
+FRAME_DELAY = 0.02   # 每帧间隔 (秒)
 
 # === 初始化 ===
 app = Flask(__name__)
@@ -57,21 +61,34 @@ def grasp_from_target_code(target_code: str):
         return False
 
     print(f"[INFO] 准备抓取：{target_code} → STAG ID: {target_id}")
-    marker_pos_pack, ids = detector.stag_identify()
-    if ids is None or target_id not in ids.flatten():
+
+    # === 多帧平均识别 ===
+    positions = []
+    t0 = time.time()
+    while len(positions) < AVG_FRAMES and (time.time() - t0) < 2.0:  # 最长2秒
+        marker_pos_pack, ids = detector.stag_identify()
+        if ids is not None and target_id in ids.flatten():
+            positions.append(marker_pos_pack[:3])
+        time.sleep(FRAME_DELAY)
+
+    if len(positions) == 0:
         print("[WARN] 当前视野中未识别到指定目标")
         return False
 
+    pos_cam_avg = np.mean(np.array(positions), axis=0)
+    position_cam = np.append(pos_cam_avg, 1.0)
+
+    # === 坐标变换 ===
     end_coords = mc.get_coords()
     while end_coords is None:
         end_coords = mc.get_coords()
 
     T_be = detector.Transformation_matrix(end_coords)
-    position_cam  = np.append(marker_pos_pack[:3], 1.0)
     position_base = T_be @ detector.EyesInHand_matrix @ position_cam
     xyz_base = position_base[:3].flatten()
     rx, ry, rz = end_coords[3:6]
 
+    # === 抓取位 ===
     grasp_coords = [xyz_base[0], xyz_base[1], xyz_base[2] + GRIPPER_Z_OFFSET, rx, ry, rz]
     detector.coord_limit(grasp_coords)
 
